@@ -1,0 +1,47 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local models, media, exports, and temporary data
+models/
+model-cache/
+*.bin
+*.safetensors
+*.pt
+*.onnx
+media/
+uploads/
+exports/
+tmp/
+temp/
+.tmp-pip/
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.flac
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+secrets/

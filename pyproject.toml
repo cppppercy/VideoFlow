@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "videoflow"
+version = "0.1.0"
+description = "本地视频与音频转文字、预览及字幕导出工具"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { file = "LICENSE" }
+authors = [{ name = "VideoFlow contributors" }]
+dependencies = [
+  "faster-whisper>=1.1,<2",
+  "gradio>=5,<7",
+  # 代理环境使用 SOCKS_PROXY 时，Gradio/httpx 仍可正常启动。
+  "httpx[socks]>=0.24,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
+
+[project.scripts]
+videoflow = "videoflow.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
