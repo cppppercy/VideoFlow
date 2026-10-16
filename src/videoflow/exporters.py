@@ -2,6 +2,7 @@
 
 from math import isfinite
 from pathlib import Path
+import re
 
 from .models import Transcript
 
@@ -31,11 +32,17 @@ def transcript_to_srt(transcript: Transcript) -> str:
     return "\n\n".join(blocks) + ("\n" if blocks else "")
 
 
+def safe_export_stem(stem: str) -> str:
+    """生成 Windows/macOS/Linux 都可用的非空导出文件名。"""
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", str(stem)).strip(" ._")
+    return cleaned[:120] or "transcript"
+
+
 def write_exports(transcript: Transcript, output_dir: str | Path, stem: str) -> tuple[Path, Path]:
     """写入 UTF-8 TXT 和 SRT；调用方负责选择不会覆盖用户文件的目录。"""
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
-    safe_stem = Path(stem).stem or "transcript"
+    safe_stem = safe_export_stem(stem)
     txt_path = destination / f"{safe_stem}.txt"
     srt_path = destination / f"{safe_stem}.srt"
     txt_path.write_text(transcript_to_txt(transcript), encoding="utf-8")

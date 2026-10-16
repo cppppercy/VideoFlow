@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "videoflow"
-version = "0.1.0"
-description = "本地视频与音频转文字、预览及字幕导出工具"
+version = "0.2.0"
+description = "本地媒体转录与 B 站已有字幕提取工具"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = { file = "LICENSE" }
@@ -15,6 +15,7 @@ dependencies = [
   # PyAV 19 移除了 faster-whisper 1.x 解码时仍传入的 metadata_errors 参数。
   "av>=11,<19",
   "gradio>=5,<7",
+  "yt-dlp==2026.8.19",
   # 代理环境使用 SOCKS_PROXY 时，Gradio/httpx 仍可正常启动。
   "httpx[socks]>=0.24,<1",
 ]

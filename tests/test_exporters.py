@@ -1,4 +1,4 @@
-from videoflow.exporters import format_srt_timestamp, transcript_to_srt, transcript_to_txt
+from videoflow.exporters import format_srt_timestamp, safe_export_stem, transcript_to_srt, transcript_to_txt
 from videoflow.models import Transcript, TranscriptSegment
 
 
@@ -23,3 +23,7 @@ def test_exported_srt_has_standard_blocks() -> None:
         "1\n00:00:00,000 --> 00:00:01,234\n你好\n\n"
         "2\n00:01:02,000 --> 01:01:01,200\n世界\n"
     )
+
+
+def test_export_stem_removes_cross_platform_invalid_characters() -> None:
+    assert safe_export_stem('课程: 第一讲?/\\') == "课程_ 第一讲"

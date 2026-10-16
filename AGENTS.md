@@ -2,14 +2,16 @@
 
 ## 范围
 
-- 当前仓库实现本地运行的 VideoFlow；V0.1 仅涵盖本地媒体转录、时间戳预览、TXT/SRT 导出。
-- 不要在未收到明确任务时加入登录、云端 API、数据库、在线分享、React、FastAPI、Docker 或后续版本功能。
+- 当前仓库实现本地运行的 VideoFlow；V0.2 包含本地媒体转录，以及 B 站单视频可访问的已有字幕导入、时间戳预览和 TXT/SRT 导出。
+- 不要在未收到明确任务时加入账号系统、Cookie 管理、云端 API、数据库、在线分享、React、FastAPI、Docker 或后续版本功能。
 - 优先采用免费、可离线运行的依赖。网页界面默认仅本机访问，不启用 `share=True`。
 
 ## 修改前后
 
 - 先阅读 `docs/PRODUCT.md`、`docs/ROADMAP.md` 与 `docs/STATUS.md`，并保留用户已有改动。
 - 转录逻辑放在 `src/videoflow/`；界面层不得复制业务逻辑。
+- 在线字幕来源放在 `src/videoflow/sources/`。只允许经过严格校验的平台 URL；不得下载完整视频、绕过 DRM 或访问控制。
+- 浏览器 Cookie 只能在用户于界面中明确选择浏览器后交给底层工具临时读取；不得保存、导出、打印或提交 Cookie。
 - 新功能应具有可离线运行的单元测试；模拟测试不得写成真实模型或真实媒体验证。
 - 完成一个任务后，运行相关测试，检查 `git diff`，并如实更新 `docs/STATUS.md`。
 
