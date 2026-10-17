@@ -1,7 +1,9 @@
 """faster-whisper 适配层。"""
 
 from collections.abc import Callable
+from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from .models import Transcript, TranscriptSegment
@@ -17,6 +19,9 @@ class TranscriptionError(RuntimeError):
     """向 CLI 和界面呈现的可读转录错误。"""
 
 
+_MODEL_RUNTIME_LOCK = Lock()
+
+
 def _validate_media_path(media_path: str | Path) -> Path:
     path = Path(media_path).expanduser()
     if not path.is_file():
@@ -27,7 +32,9 @@ def _validate_media_path(media_path: str | Path) -> Path:
     return path
 
 
+@lru_cache(maxsize=1)
 def _default_model_factory(model_name: str, device: str, compute_type: str) -> Any:
+    """缓存最近使用的一个模型，批量任务无需为每个视频重复加载。"""
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
@@ -55,16 +62,18 @@ def transcribe_media(
         raise TranscriptionError(f"不支持的模型“{model_name}”；可选：{', '.join(MODEL_OPTIONS)}")
 
     factory = model_factory or _default_model_factory
-    model = factory(model_name, device, compute_type)
     try:
-        segments, info = model.transcribe(
-            str(path), language=language or None, vad_filter=True, beam_size=5
-        )
-        converted = tuple(
-            TranscriptSegment(start=float(item.start), end=float(item.end), text=str(item.text).strip())
-            for item in segments
-            if str(item.text).strip()
-        )
+        # 模型加载与推理共用一把锁，避免两个网页任务同时首次加载模型而瞬间占满内存。
+        with _MODEL_RUNTIME_LOCK:
+            model = factory(model_name, device, compute_type)
+            segments, info = model.transcribe(
+                str(path), language=language or None, vad_filter=True, beam_size=5
+            )
+            converted = tuple(
+                TranscriptSegment(start=float(item.start), end=float(item.end), text=str(item.text).strip())
+                for item in segments
+                if str(item.text).strip()
+            )
     except TranscriptionError:
         raise
     except Exception as exc:

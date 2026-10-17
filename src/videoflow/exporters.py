@@ -3,6 +3,7 @@
 from math import isfinite
 from pathlib import Path
 import re
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from .models import Transcript
 
@@ -48,3 +49,24 @@ def write_exports(transcript: Transcript, output_dir: str | Path, stem: str) -> 
     txt_path.write_text(transcript_to_txt(transcript), encoding="utf-8")
     srt_path.write_text(transcript_to_srt(transcript), encoding="utf-8")
     return txt_path, srt_path
+
+
+def write_batch_archive(
+    items: list[tuple[str, Transcript]], output_dir: str | Path, stem: str = "videoflow-batch"
+) -> Path:
+    """将多个转录结果直接写入 ZIP，避免保留额外媒体或中间文件。"""
+    if not items:
+        raise ValueError("没有可导出的批量转录结果。")
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    archive_path = destination / f"{safe_export_stem(stem)}.zip"
+    used: set[str] = set()
+    with ZipFile(archive_path, "w", compression=ZIP_DEFLATED) as archive:
+        for index, (title, transcript) in enumerate(items, start=1):
+            base = safe_export_stem(title)
+            if base in used:
+                base = f"{base}-{index}"
+            used.add(base)
+            archive.writestr(f"{base}.txt", transcript_to_txt(transcript).encode("utf-8"))
+            archive.writestr(f"{base}.srt", transcript_to_srt(transcript).encode("utf-8"))
+    return archive_path

@@ -14,3 +14,8 @@ def test_bilibili_failure_is_shown_in_status(monkeypatch) -> None:
 
 def test_system_audio_requires_consent() -> None:
     assert ui.start_system_audio_recording(False).startswith("请先确认")
+
+
+def test_online_audio_workflows_require_consent() -> None:
+    assert ui.process_bilibili_audio_batch("url", "tiny", "zh", "", False)[0].startswith("请先确认")
+    assert ui.process_lms_replay("secret", "tiny", "zh", False)[1].startswith("请先确认")

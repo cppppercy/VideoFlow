@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "VideoFlow LMS 助手",
+  "version": "0.1.0",
+  "description": "在已登录的西交 LMS 页面生成一次性 VideoFlow 课程转录任务。",
+  "permissions": ["clipboardWrite"],
+  "host_permissions": ["https://lms.xjtu.edu.cn/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://lms.xjtu.edu.cn/course/*/learning-activity*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
