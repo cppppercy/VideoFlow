@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "videoflow"
-version = "0.2.0"
-description = "本地媒体转录与 B 站已有字幕提取工具"
+version = "0.3.0"
+description = "本地媒体转录、B 站已有字幕与播放声音转写工具"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = { file = "LICENSE" }
@@ -16,6 +16,8 @@ dependencies = [
   "av>=11,<19",
   "gradio>=5,<7",
   "yt-dlp==2026.8.19",
+  # Windows WASAPI 回环录制当前默认扬声器声音；不访问网页账号或视频流。
+  "SoundCard>=0.4,<0.5",
   # 代理环境使用 SOCKS_PROXY 时，Gradio/httpx 仍可正常启动。
   "httpx[socks]>=0.24,<1",
 ]

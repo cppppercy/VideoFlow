@@ -8,11 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from ..models import Transcript, TranscriptSegment
+from ..runtime import make_temporary_directory
 
 _BILIBILI_HOSTS = {"www.bilibili.com", "bilibili.com"}
 _BVID_PATH = re.compile(r"^/video/(BV[0-9A-Za-z]{10})/?$", re.IGNORECASE)
@@ -147,7 +147,7 @@ def fetch_bilibili_subtitles(
     """下载一个可访问字幕 JSON 并转换；不会选择或下载任何视频格式。"""
     canonical_url = validate_bilibili_url(raw_url)
 
-    with TemporaryDirectory(prefix="videoflow-bilibili-") as temporary_directory:
+    with make_temporary_directory(prefix="videoflow-bilibili-") as temporary_directory:
         workdir = Path(temporary_directory)
         try:
             result = runner(
