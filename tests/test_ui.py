@@ -17,5 +17,7 @@ def test_system_audio_requires_consent() -> None:
 
 
 def test_online_audio_workflows_require_consent() -> None:
-    assert ui.process_bilibili_audio_batch("url", "tiny", "zh", "", False)[0].startswith("请先确认")
-    assert ui.process_lms_replay("secret", "tiny", "zh", False)[1].startswith("请先确认")
+    assert ui.process_bilibili_audio_batch("url", "fast", "zh", "", "", False)[0].startswith(
+        "请先确认"
+    )
+    assert ui.process_lms_replay("secret", "fast", "zh", "", False)[1].startswith("请先确认")

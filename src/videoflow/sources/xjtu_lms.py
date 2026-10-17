@@ -25,7 +25,9 @@ class XjtuReplay:
     activity_id: int
     title: str
     stream_url: str
+    fallback_urls: tuple[str, ...]
     label: str
+    request_headers: tuple[tuple[str, str], ...]
 
 
 JsonGetter = Callable[..., object]
@@ -102,14 +104,18 @@ def resolve_lms_replay(raw_payload: str, *, get_json: JsonGetter = _default_get_
         headers={"Authorization": f"Bearer {rms_token}"},
     )
     videos = _extract_video_list(response)
-    selected = _select_audio_video(videos)
-    stream_url = str(selected.get("play_url") or "").strip()
-    _validate_stream_url(stream_url)
+    selected, stream_urls = _select_audio_video(videos)
     return XjtuReplay(
         activity_id=activity_id,
         title=title,
-        stream_url=stream_url,
+        stream_url=stream_urls[0],
+        fallback_urls=stream_urls[1:],
         label=str(selected.get("label") or "课程回放"),
+        # LMS/RMS 的媒体 CDN 会校验同源头；缺少这两个请求头时通常直接返回 HTTP 403。
+        request_headers=(
+            ("Origin", "https://lms.xjtu.edu.cn"),
+            ("Referer", "https://lms.xjtu.edu.cn/"),
+        ),
     )
 
 
@@ -128,15 +134,45 @@ def _extract_video_list(response: object) -> list[Mapping[str, Any]]:
     return [item for item in candidates if isinstance(item, Mapping)]
 
 
-def _select_audio_video(videos: list[Mapping[str, Any]]) -> Mapping[str, Any]:
-    playable = [item for item in videos if isinstance(item.get("play_url"), str) and item.get("play_url")]
+def _select_audio_video(
+    videos: list[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], tuple[str, ...]]:
+    """优先选择上游标记的主音源，并以 download_url 作为稳定直链。
+
+    LMS 的 download_url 同时被当前可用客户端用于回放；play_url 只作为备用。
+    """
+    playable = [
+        item
+        for item in videos
+        if any(isinstance(item.get(key), str) and item.get(key) for key in ("download_url", "play_url"))
+    ]
     if not playable:
         raise XjtuLmsError("该课程回放没有可用播放地址。")
-    return sorted(
+    ordered = sorted(
         playable,
+        # mute 是多机位同时播放时的提示，不代表该文件没有音轨。
         key=lambda item: (bool(item.get("is_best_audio")), not bool(item.get("mute"))),
         reverse=True,
-    )[0]
+    )
+    urls: list[str] = []
+    selected: Mapping[str, Any] | None = None
+    for item in ordered:
+        # 直链优先；在线 play_url 可能是需要播放器上下文的清单地址。
+        for key in ("download_url", "play_url"):
+            candidate = str(item.get(key) or "").strip()
+            if not candidate or candidate in urls:
+                continue
+            try:
+                _validate_stream_url(candidate)
+            except XjtuLmsError:
+                # 忽略单个不安全或旧式地址，但仍允许同一回放中的安全备用地址。
+                continue
+            urls.append(candidate)
+            if selected is None:
+                selected = item
+    if not urls:
+        raise XjtuLmsError("该课程回放没有安全可用的媒体地址。")
+    return selected or ordered[0], tuple(urls)
 
 
 def _validate_stream_url(url: str) -> None:

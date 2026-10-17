@@ -40,12 +40,14 @@ def test_resolve_lms_replay_selects_best_audio_stream_without_returning_tokens()
                         "label": "ENCODER",
                         "mute": True,
                         "is_best_audio": False,
+                        "download_url": "https://cdn.example.edu/screen.mp4",
                         "play_url": "https://cdn.example.edu/screen.m3u8",
                     },
                     {
                         "label": "INSTRUCTOR",
                         "mute": False,
                         "is_best_audio": True,
+                        "download_url": "https://cdn.example.edu/teacher.mp4",
                         "play_url": "https://cdn.example.edu/teacher.m3u8",
                     },
                 ]
@@ -54,7 +56,16 @@ def test_resolve_lms_replay_selects_best_audio_stream_without_returning_tokens()
 
     replay = resolve_lms_replay(payload(), get_json=fake_get)
 
-    assert replay.stream_url == "https://cdn.example.edu/teacher.m3u8"
+    assert replay.stream_url == "https://cdn.example.edu/teacher.mp4"
+    assert replay.fallback_urls == (
+        "https://cdn.example.edu/teacher.m3u8",
+        "https://cdn.example.edu/screen.mp4",
+        "https://cdn.example.edu/screen.m3u8",
+    )
+    assert dict(replay.request_headers) == {
+        "Origin": "https://lms.xjtu.edu.cn",
+        "Referer": "https://lms.xjtu.edu.cn/",
+    }
     assert replay.title == "第一讲"
     assert calls[0][1]["params"] == {"token": "short-lived"}
     assert calls[1][1]["headers"] == {"Authorization": "Bearer rms-bearer"}

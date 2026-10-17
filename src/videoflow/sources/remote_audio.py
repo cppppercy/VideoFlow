@@ -121,6 +121,7 @@ def extract_stream_audio(
     stream_url: str,
     title: str,
     *,
+    request_headers: tuple[tuple[str, str], ...] = (),
     runner: _CommandRunner = subprocess.run,
 ) -> Iterator[ExtractedAudio]:
     """用 FFmpeg 读取已授权的播放地址，只输出临时单声道 WAV。"""
@@ -135,19 +136,26 @@ def extract_stream_audio(
             "-y",
             "-rw_timeout",
             "20000000",
-            "-i",
-            stream_url,
-            "-map",
-            "0:a:0",
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-c:a",
-            "pcm_s16le",
-            str(output),
         ]
+        if request_headers:
+            header_text = "".join(f"{name}: {value}\r\n" for name, value in request_headers)
+            command.extend(["-headers", header_text])
+        command.extend(
+            [
+                "-i",
+                stream_url,
+                "-map",
+                "0:a:0",
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-c:a",
+                "pcm_s16le",
+                str(output),
+            ]
+        )
         try:
             result = runner(
                 command,
@@ -165,8 +173,24 @@ def extract_stream_audio(
         except Exception as exc:
             raise RemoteAudioError("无法启动课程音频提取。") from exc
         if result.returncode != 0 or not output.is_file() or output.stat().st_size <= 44:
-            raise RemoteAudioError(
-                "课程播放地址已失效、没有音轨，或采用了不受支持的保护方式。"
-                "请回课程页面重新复制任务；VideoFlow 不会绕过 DRM。"
-            )
+            raise RemoteAudioError(_friendly_stream_error(result.stderr))
         yield ExtractedAudio(path=output, title=title)
+
+
+def _friendly_stream_error(stderr: str) -> str:
+    """保留可行动的 FFmpeg 错误类别，但绝不回显含签名参数的媒体地址。"""
+    normalized = stderr.lower()
+    if "403 forbidden" in normalized or "server returned 403" in normalized:
+        return "课程媒体服务器拒绝了请求（HTTP 403）；将自动尝试该回放的其他授权地址。"
+    if "401 unauthorized" in normalized or "server returned 401" in normalized:
+        return "课程短期授权已失效（HTTP 401）；请回 LMS 页面重新复制任务。"
+    if "404 not found" in normalized or "server returned 404" in normalized:
+        return "课程媒体地址已过期或不存在（HTTP 404）；请回 LMS 页面重新复制任务。"
+    if "matches no streams" in normalized or "does not contain any stream" in normalized:
+        return "这个回放地址没有可读取的音轨；将自动尝试其他机位或媒体地址。"
+    if "invalid data found" in normalized or "error when loading first segment" in normalized:
+        return "课程媒体清单或分片无法读取；将自动尝试其他授权地址。"
+    return (
+        "课程媒体无法读取；将自动尝试其他授权地址。若全部失败，请回 LMS 页面重新复制任务。"
+        "VideoFlow 不会绕过 DRM。"
+    )

@@ -10,7 +10,7 @@ from .sources.bilibili import BilibiliSubtitleError, fetch_bilibili_subtitles
 from .sources.remote_audio import RemoteAudioError
 from .sources.xjtu_lms import XjtuLmsError
 from .system_audio import SystemAudioCaptureError, SystemAudioRecorder
-from .transcriber import MODEL_OPTIONS, TranscriptionError, transcribe_media
+from .transcriber import PROFILE_OPTIONS, TranscriptionError, transcribe_media
 from .workflows import transcribe_bilibili_batch, transcribe_lms_payload
 
 LANGUAGE_OPTIONS = [("自动识别", ""), ("中文", "zh"), ("English", "en"), ("日本語", "ja"), ("한국어", "ko")]
@@ -44,13 +44,21 @@ def _failure_result(error: Exception) -> tuple[str, list[list[str]], str, str, N
 
 
 def process_upload(
-    media_path: str | None, model_name: str, language: str | None
+    media_path: str | None,
+    profile_name: str,
+    language: str | None,
+    initial_prompt: str | None,
 ) -> tuple[str, list[list[str]], str, str, str | None, str | None]:
     """UI 回调。导出文件只在进程的临时目录内保存。"""
     try:
         if not media_path:
             raise ValueError("请先选择一个本地音频或视频文件。")
-        transcript = transcribe_media(media_path, model_name=model_name, language=language or None)
+        transcript = transcribe_media(
+            media_path,
+            profile_name=profile_name,
+            language=language or None,
+            initial_prompt=initial_prompt,
+        )
         language_label = transcript.language or "未知"
         status = f"完成：{len(transcript.segments)} 个分段，识别语言：{language_label}。"
         txt_path, srt_path = write_exports(transcript, _EXPORT_STORE.path, Path(media_path).stem)
@@ -97,9 +105,10 @@ def process_bilibili_url(
 
 def process_bilibili_audio_batch(
     raw_urls: str | None,
-    model_name: str,
+    profile_name: str,
     language: str | None,
     browser: str | None,
+    initial_prompt: str | None,
     confirmed: bool,
 ) -> tuple[str, str, str | None]:
     """批量提取 B 站独立音频流并转录，完整视频不会作为回退格式下载。"""
@@ -108,9 +117,11 @@ def process_bilibili_audio_batch(
     try:
         result = transcribe_bilibili_batch(
             raw_urls or "",
-            model_name=model_name,
+            model_name="base",
             language=language or None,
             browser=browser or None,
+            profile_name=profile_name,
+            initial_prompt=initial_prompt,
         )
         report_lines = [
             *(f"成功：{item.source}" for item in result.successes),
@@ -134,8 +145,9 @@ def process_bilibili_audio_batch(
 
 def process_lms_replay(
     payload: str | None,
-    model_name: str,
+    profile_name: str,
     language: str | None,
+    initial_prompt: str | None,
     confirmed: bool,
 ) -> tuple[str, str, list[list[str]], str, str, str | None, str | None]:
     """使用浏览器助手提供的一次性任务提取课程音频并转录；首项用于清空任务框。"""
@@ -144,8 +156,10 @@ def process_lms_replay(
     try:
         result = transcribe_lms_payload(
             payload or "",
-            model_name=model_name,
+            model_name="base",
             language=language or None,
+            profile_name=profile_name,
+            initial_prompt=initial_prompt,
         )
         transcript = result.transcript
         txt_path, srt_path = write_exports(transcript, _EXPORT_STORE.path, result.title)
@@ -178,12 +192,17 @@ def start_system_audio_recording(confirmed: bool) -> str:
 
 
 def stop_system_audio_and_transcribe(
-    model_name: str, language: str | None
+    profile_name: str, language: str | None, initial_prompt: str | None
 ) -> tuple[str, list[list[str]], str, str, str | None, str | None]:
     """停止录音后立即使用既有本地转录链路；原始 WAV 随后删除。"""
     try:
         captured = _SYSTEM_AUDIO_RECORDER.stop()
-        transcript = transcribe_media(captured.path, model_name=model_name, language=language or None)
+        transcript = transcribe_media(
+            captured.path,
+            profile_name=profile_name,
+            language=language or None,
+            initial_prompt=initial_prompt,
+        )
         txt_path, srt_path = write_exports(transcript, _EXPORT_STORE.path, "system-audio-transcript")
         status = (
             f"完成：已录制 {captured.seconds:.1f} 秒电脑声音并生成 {len(transcript.segments)} 个分段。"
@@ -211,79 +230,101 @@ def create_app() -> Any:
 
     with gr.Blocks(title="VideoFlow") as demo:
         gr.Markdown(
-            "# VideoFlow\n本地文件、B 站独立音频流或已授权课程回放均在本机转录。"
-            "不上传媒体，临时音频在处理后删除。"
+            "# VideoFlow\n"
+            "本机完成音视频转字幕：选择来源 → 设置转录模式 → 下载 TXT/SRT。"
+            "在线来源只处理当前账号有权访问的内容，临时音频在完成后删除。"
         )
+        with gr.Accordion("转录设置（本地文件、B 站音频、LMS 和兼容录音共用）", open=True):
+            with gr.Row():
+                profile = gr.Dropdown(PROFILE_OPTIONS, value="balanced", label="速度 / 准确度")
+                language = gr.Dropdown(LANGUAGE_OPTIONS, value="zh", label="语音语言")
+            initial_prompt = gr.Textbox(
+                label="课程关键词（可选，可提高术语和人名识别）",
+                placeholder="例如：线性代数，特征值，Jordan 标准形，教师姓名",
+                lines=2,
+            )
+            gr.Markdown(
+                "快速适合先出初稿；均衡适合普通课程；高精度更慢。"
+                "三个模式都使用 CPU INT8 和批量推理，首次使用对应模型时需要下载。"
+            )
+
         with gr.Tabs():
-            with gr.Tab("本地文件转录"):
-                with gr.Row():
-                    media = gr.File(label="音频或视频", type="filepath")
-                    with gr.Column():
-                        model = gr.Dropdown(MODEL_OPTIONS, value="base", label="模型")
-                        language = gr.Dropdown(LANGUAGE_OPTIONS, value="", label="语言")
-                        run_button = gr.Button("开始本地转录", variant="primary")
-            with gr.Tab("B 站已有字幕"):
+            with gr.Tab("本地文件"):
+                media = gr.File(label="选择音频或视频", type="filepath")
+                run_button = gr.Button("开始转录本地文件", variant="primary")
+
+            with gr.Tab("在线内容"):
+                with gr.Tabs():
+                    with gr.Tab("B 站"):
+                        with gr.Accordion("已有字幕：直接导入（最快）", open=True):
+                            gr.Markdown("只读取单个 BV 视频的字幕 JSON，不下载视频或音频。")
+                            bilibili_url = gr.Textbox(
+                                label="B 站视频链接",
+                                placeholder="https://www.bilibili.com/video/BV...",
+                            )
+                            with gr.Row():
+                                bilibili_language = gr.Dropdown(
+                                    BILIBILI_LANGUAGE_OPTIONS, value="zh.*", label="字幕语言"
+                                )
+                                browser = gr.Dropdown(
+                                    BROWSER_OPTIONS, value="", label="登录会话（可选）"
+                                )
+                            bilibili_button = gr.Button("导入已有字幕")
+
+                        with gr.Accordion("没有字幕：提取音频并识别", open=False):
+                            gr.Markdown(
+                                "每行一个 BV 链接，最多 10 个。只选择独立音频流，不实时播放，"
+                                "不会混入电脑其他声音；结果打包为 ZIP。"
+                            )
+                            bilibili_audio_urls = gr.Textbox(
+                                label="B 站链接（每行一个）",
+                                placeholder="https://www.bilibili.com/video/BV...",
+                                lines=5,
+                            )
+                            bilibili_audio_browser = gr.Dropdown(
+                                BROWSER_OPTIONS, value="", label="登录会话（可选）"
+                            )
+                            bilibili_audio_consent = gr.Checkbox(
+                                label="我确认有权处理这些视频，仅用于个人学习", value=False
+                            )
+                            bilibili_audio_button = gr.Button("批量转录 B 站音频", variant="primary")
+                            bilibili_batch_status = gr.Textbox(label="批量状态", interactive=False)
+                            bilibili_batch_report = gr.Textbox(
+                                label="逐项结果", lines=6, interactive=False
+                            )
+                            bilibili_batch_zip = gr.File(
+                                label="下载批量 TXT/SRT（ZIP）", interactive=False
+                            )
+
+                    with gr.Tab("西交 LMS"):
+                        gr.Markdown(
+                            "在已登录的课程活动页点击浏览器助手右下角“复制到 VideoFlow”，"
+                            "粘贴后即可直接提取授权回放，不需要把课程实时播放一遍。"
+                        )
+                        lms_payload = gr.Textbox(
+                            label="LMS 助手任务（一次性信息，处理后自动清空）",
+                            type="password",
+                        )
+                        lms_consent = gr.Checkbox(
+                            label="我确认当前账号有观看权限，并仅为个人学习转录", value=False
+                        )
+                        lms_button = gr.Button("提取 LMS 音频并转录", variant="primary")
+                        gr.Markdown(
+                            "助手目录：`D:\\application\\VideoFlow\\browser-extension`。"
+                            "新版会优先使用 LMS 的授权直链、附带平台要求的同源请求头，并在失败时尝试备用机位。"
+                        )
+
+            with gr.Tab("兼容录音"):
                 gr.Markdown(
-                    "仅支持单个 BV 视频链接；只下载字幕 JSON，不下载完整视频。"
-                    "部分字幕需登录 B 站才能访问。没有已有字幕时，请改用“B 站音频转录”。"
+                    "仅在在线直连确实失败时使用。它会实时录制 Windows 默认扬声器，"
+                    "因此必须完整播放，且会录入通知和其他声音。"
                 )
-                bilibili_url = gr.Textbox(label="B 站视频链接", placeholder="https://www.bilibili.com/video/BV...")
-                with gr.Row():
-                    bilibili_language = gr.Dropdown(BILIBILI_LANGUAGE_OPTIONS, value="zh.*", label="字幕语言")
-                    browser = gr.Dropdown(BROWSER_OPTIONS, value="", label="本机登录会话（可选）")
-                bilibili_button = gr.Button("导入已有字幕", variant="primary")
-            with gr.Tab("B 站音频转录"):
-                gr.Markdown(
-                    "每行粘贴一个完整 BV 链接（单次最多 10 个）。VideoFlow 只选择 B 站独立音频流，"
-                    "不会用完整视频格式兜底；下载后离线转录，因此不必实时播放，也不会混入电脑其他声音。"
-                )
-                bilibili_audio_urls = gr.Textbox(
-                    label="B 站链接（每行一个）",
-                    placeholder="https://www.bilibili.com/video/BV...",
-                    lines=6,
+                recording_consent = gr.Checkbox(
+                    label="我确认有权记录当前播放内容，仅用于个人学习", value=False
                 )
                 with gr.Row():
-                    bilibili_audio_model = gr.Dropdown(MODEL_OPTIONS, value="base", label="模型")
-                    bilibili_audio_language = gr.Dropdown(LANGUAGE_OPTIONS, value="zh", label="语音语言")
-                    bilibili_audio_browser = gr.Dropdown(
-                        BROWSER_OPTIONS, value="", label="本机登录会话（可选）"
-                    )
-                bilibili_audio_consent = gr.Checkbox(
-                    label="我确认有权处理这些视频，仅用于个人学习", value=False
-                )
-                bilibili_audio_button = gr.Button("提取音频并批量转录", variant="primary")
-                bilibili_batch_status = gr.Textbox(label="批量状态", interactive=False)
-                bilibili_batch_report = gr.Textbox(label="逐项结果", lines=8, interactive=False)
-                bilibili_batch_zip = gr.File(label="下载批量 TXT/SRT（ZIP）", interactive=False)
-            with gr.Tab("西交 LMS 课程回放"):
-                gr.Markdown(
-                    "无需播放完整课程。先在 Edge/Chrome 扩展页加载仓库中的 `browser-extension` 文件夹；"
-                    "登录 LMS 并打开具体学习活动后，点击右下角“复制到 VideoFlow”，再把任务粘贴到下面。"
-                    "助手不导出 Cookie、账号或密码；短期任务仅在本次本机处理期间使用。"
-                )
-                lms_payload = gr.Textbox(
-                    label="LMS 助手任务（一次性短期信息，处理后自动清空）", type="password"
-                )
-                with gr.Row():
-                    lms_model = gr.Dropdown(MODEL_OPTIONS, value="base", label="模型")
-                    lms_language = gr.Dropdown(LANGUAGE_OPTIONS, value="zh", label="语音语言")
-                lms_consent = gr.Checkbox(
-                    label="我确认当前账号有观看权限，并仅为个人学习转录", value=False
-                )
-                lms_button = gr.Button("提取课程音频并转录", variant="primary")
-            with gr.Tab("播放中的网页/课程转录"):
-                gr.Markdown(
-                    "兼容性兜底：适用于链接音频提取失败但可以正常播放的内容。"
-                    "请自行在课程网页正常播放；VideoFlow 只在本机录制当前 Windows 默认扬声器的声音，"
-                    "不会读取课程链接、账号或浏览器 Cookie，也不会下载课程视频。"
-                )
-                recording_consent = gr.Checkbox(label="我确认有权记录当前播放内容，仅用于个人学习", value=False)
-                with gr.Row():
-                    recording_model = gr.Dropdown(MODEL_OPTIONS, value="base", label="模型")
-                    recording_language = gr.Dropdown(LANGUAGE_OPTIONS, value="zh", label="语言")
-                with gr.Row():
-                    recording_start = gr.Button("开始录制电脑声音", variant="primary")
-                    recording_stop = gr.Button("停止录制并转录")
+                    recording_start = gr.Button("开始录制电脑声音")
+                    recording_stop = gr.Button("停止录制并转录", variant="primary")
         status = gr.Textbox(label="处理状态", interactive=False)
         table = gr.Dataframe(headers=["开始（秒）", "结束（秒）", "文本"], label="字幕分段", interactive=False)
         full_text = gr.Textbox(label="全文（可复制）", lines=12)
@@ -293,7 +334,7 @@ def create_app() -> Any:
             srt_download = gr.File(label="下载 SRT", interactive=False)
         run_button.click(
             process_upload,
-            [media, model, language],
+            [media, profile, language, initial_prompt],
             [status, table, full_text, srt_text, txt_download, srt_download],
         )
         bilibili_button.click(
@@ -305,22 +346,23 @@ def create_app() -> Any:
             process_bilibili_audio_batch,
             [
                 bilibili_audio_urls,
-                bilibili_audio_model,
-                bilibili_audio_language,
+                profile,
+                language,
                 bilibili_audio_browser,
+                initial_prompt,
                 bilibili_audio_consent,
             ],
             [bilibili_batch_status, bilibili_batch_report, bilibili_batch_zip],
         )
         lms_button.click(
             process_lms_replay,
-            [lms_payload, lms_model, lms_language, lms_consent],
+            [lms_payload, profile, language, initial_prompt, lms_consent],
             [lms_payload, status, table, full_text, srt_text, txt_download, srt_download],
         )
         recording_start.click(start_system_audio_recording, [recording_consent], [status])
         recording_stop.click(
             stop_system_audio_and_transcribe,
-            [recording_model, recording_language],
+            [profile, language, initial_prompt],
             [status, table, full_text, srt_text, txt_download, srt_download],
         )
 
