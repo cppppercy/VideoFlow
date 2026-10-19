@@ -52,6 +52,7 @@ def test_lms_workflow_retries_authorized_fallback_stream(monkeypatch, tmp_path: 
     audio_path = tmp_path / "stream.wav"
     audio_path.touch()
     seen: list[str] = []
+    progress: list[tuple[str, float | None, float | None]] = []
 
     @contextmanager
     def fake_extract(url: str, title: str, **kwargs: object):
@@ -59,13 +60,20 @@ def test_lms_workflow_retries_authorized_fallback_stream(monkeypatch, tmp_path: 
         assert kwargs["request_headers"] == replay.request_headers
         if "primary" in url:
             raise RemoteAudioError("HTTP 403")
+        kwargs["progress_callback"](30.0, 60.0)
         yield ExtractedAudio(audio_path, title)
 
     monkeypatch.setattr(workflows, "resolve_lms_replay", lambda payload: replay)
     monkeypatch.setattr(workflows, "extract_stream_audio", fake_extract)
     monkeypatch.setattr(workflows, "transcribe_media", lambda *args, **kwargs: Transcript(()))
 
-    result = workflows.transcribe_lms_payload("payload", model_name="base", language="zh")
+    result = workflows.transcribe_lms_payload(
+        "payload",
+        model_name="base",
+        language="zh",
+        progress_callback=lambda stage, current, total: progress.append((stage, current, total)),
+    )
 
     assert result.title == "第一讲"
     assert seen == [replay.stream_url, replay.fallback_urls[0]]
+    assert ("正在提取课程音频（已处理 00:00:30）", 30.0, 60.0) in progress

@@ -4,7 +4,12 @@ import wave
 
 import pytest
 
-from videoflow.sources.remote_audio import RemoteAudioError, extract_bilibili_audio, extract_stream_audio
+from videoflow.sources.remote_audio import (
+    RemoteAudioError,
+    _parse_ffmpeg_clock,
+    extract_bilibili_audio,
+    extract_stream_audio,
+)
 
 
 def _write_wav(path: Path) -> None:
@@ -38,6 +43,7 @@ def test_stream_audio_uses_ffmpeg_audio_only_output() -> None:
         assert "-vn" in command
         assert command[command.index("-map") + 1] == "0:a:0"
         assert command[command.index("-i") + 1] == stream_url
+        assert command[command.index("-progress") + 1] == "pipe:2"
         headers = command[command.index("-headers") + 1]
         assert "Origin: https://lms.xjtu.edu.cn\r\n" in headers
         assert "Referer: https://lms.xjtu.edu.cn/\r\n" in headers
@@ -52,6 +58,12 @@ def test_stream_audio_uses_ffmpeg_audio_only_output() -> None:
     ) as audio:
         assert audio.title == "课程回放"
         assert audio.path.is_file()
+
+
+def test_ffmpeg_clock_parser_handles_duration_and_progress_lines() -> None:
+    assert _parse_ffmpeg_clock("Duration: 01:02:03.500, start: 0") == pytest.approx(3723.5)
+    assert _parse_ffmpeg_clock("00:12:34.250000") == pytest.approx(754.25)
+    assert _parse_ffmpeg_clock("N/A") is None
 
 
 def test_stream_audio_reports_403_without_leaking_signed_url() -> None:

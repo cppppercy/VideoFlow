@@ -5,9 +5,13 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty, Queue
+import re
 import subprocess
 import sys
-from typing import Any, Iterator, Protocol
+from threading import Thread
+from time import monotonic
+from typing import Any, Callable, Iterator, Protocol
 
 from ..runtime import make_temporary_directory
 from .bilibili import validate_bilibili_url
@@ -15,6 +19,7 @@ from .bilibili import validate_bilibili_url
 
 _DOWNLOAD_TIMEOUT_SECONDS = 60 * 60
 _FFMPEG_TIMEOUT_SECONDS = 2 * 60 * 60
+_FFMPEG_CLOCK = re.compile(r"(?P<hours>\d+):(?P<minutes>\d{2}):(?P<seconds>\d{2}(?:\.\d+)?)")
 
 
 class RemoteAudioError(RuntimeError):
@@ -29,6 +34,103 @@ class ExtractedAudio:
 
 class _CommandRunner(Protocol):
     def __call__(self, command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]: ...
+
+
+AudioProgressCallback = Callable[[float, float | None], None]
+
+
+def _parse_ffmpeg_clock(value: str) -> float | None:
+    match = _FFMPEG_CLOCK.search(value)
+    if match is None:
+        return None
+    try:
+        return (
+            int(match.group("hours")) * 3600
+            + int(match.group("minutes")) * 60
+            + float(match.group("seconds"))
+        )
+    except ValueError:
+        return None
+
+
+def _run_ffmpeg_with_progress(
+    command: list[str],
+    *,
+    progress_callback: AudioProgressCallback | None,
+) -> subprocess.CompletedProcess[str]:
+    """运行 FFmpeg 并解析安全的时长进度；不保存或回显含签名地址的输出。"""
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    assert process.stderr is not None
+    lines: Queue[str | None] = Queue()
+
+    def read_stderr() -> None:
+        try:
+            for line in process.stderr:
+                lines.put(line)
+        finally:
+            lines.put(None)
+
+    reader = Thread(target=read_stderr, name="videoflow-ffmpeg-progress", daemon=True)
+    reader.start()
+    deadline = monotonic() + _FFMPEG_TIMEOUT_SECONDS
+    duration: float | None = None
+    current = 0.0
+    error_markers: set[str] = set()
+    reader_finished = False
+
+    try:
+        while not reader_finished or process.poll() is None:
+            if monotonic() >= deadline:
+                process.kill()
+                process.wait(timeout=10)
+                raise subprocess.TimeoutExpired(command, _FFMPEG_TIMEOUT_SECONDS)
+            try:
+                line = lines.get(timeout=0.5)
+            except Empty:
+                continue
+            if line is None:
+                reader_finished = True
+                continue
+            normalized = line.lower()
+            if "duration:" in normalized and duration is None:
+                duration = _parse_ffmpeg_clock(line)
+            elif normalized.startswith("out_time="):
+                parsed = _parse_ffmpeg_clock(line.partition("=")[2])
+                if parsed is not None:
+                    current = max(current, parsed)
+                    if progress_callback is not None:
+                        progress_callback(current, duration)
+
+            # 只保留错误类别，绝不保留可能含签名 URL/token 的原始行。
+            for marker in (
+                "403 forbidden",
+                "server returned 403",
+                "401 unauthorized",
+                "server returned 401",
+                "404 not found",
+                "server returned 404",
+                "matches no streams",
+                "does not contain any stream",
+                "invalid data found",
+                "error when loading first segment",
+            ):
+                if marker in normalized:
+                    error_markers.add(marker)
+        return_code = process.wait(timeout=10)
+    finally:
+        process.stderr.close()
+        reader.join(timeout=2)
+
+    if progress_callback is not None and return_code == 0:
+        progress_callback(duration or current, duration)
+    return subprocess.CompletedProcess(command, return_code, "", "\n".join(sorted(error_markers)))
 
 
 def _bilibili_audio_command(workdir: Path, browser: str | None, url: str) -> list[str]:
@@ -123,6 +225,7 @@ def extract_stream_audio(
     *,
     request_headers: tuple[tuple[str, str], ...] = (),
     runner: _CommandRunner = subprocess.run,
+    progress_callback: AudioProgressCallback | None = None,
 ) -> Iterator[ExtractedAudio]:
     """用 FFmpeg 读取已授权的播放地址，只输出临时单声道 WAV。"""
     with make_temporary_directory(prefix="videoflow-stream-audio-") as temporary_directory:
@@ -132,7 +235,11 @@ def extract_stream_audio(
             "-nostdin",
             "-hide_banner",
             "-loglevel",
-            "error",
+            "info",
+            "-stats_period",
+            "1",
+            "-progress",
+            "pipe:2",
             "-y",
             "-rw_timeout",
             "20000000",
@@ -157,15 +264,21 @@ def extract_stream_audio(
             ]
         )
         try:
-            result = runner(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=_FFMPEG_TIMEOUT_SECONDS,
-                check=False,
-            )
+            if runner is subprocess.run:
+                result = _run_ffmpeg_with_progress(
+                    command,
+                    progress_callback=progress_callback,
+                )
+            else:
+                result = runner(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=_FFMPEG_TIMEOUT_SECONDS,
+                    check=False,
+                )
         except subprocess.TimeoutExpired as exc:
             raise RemoteAudioError("课程音频提取超过 2 小时，任务已停止。") from exc
         except FileNotFoundError as exc:

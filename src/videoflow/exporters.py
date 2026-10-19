@@ -7,6 +7,13 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from .models import Transcript
 
+_SENTENCE_ENDINGS = frozenset("。！？!?；;")
+_CLOSING_PUNCTUATION = frozenset("，。！？；：、,.!?;:%)]}”’》」』】〉")
+_OPENING_PUNCTUATION = frozenset("([{（【《「『“‘〈")
+_PARAGRAPH_PAUSE_SECONDS = 2.5
+_FORCED_PARAGRAPH_PAUSE_SECONDS = 6.0
+_TARGET_PARAGRAPH_CHARACTERS = 500
+
 
 def format_srt_timestamp(seconds: float) -> str:
     """将秒转为 `HH:MM:SS,mmm`，按毫秒四舍五入。"""
@@ -20,7 +27,61 @@ def format_srt_timestamp(seconds: float) -> str:
 
 
 def transcript_to_txt(transcript: Transcript) -> str:
-    return transcript.text + ("\n" if transcript.text else "")
+    text = format_readable_text(transcript)
+    return text + ("\n" if text else "")
+
+
+def format_readable_text(transcript: Transcript) -> str:
+    """把字幕片段排成连续阅读文本，不添加模型没有生成的标点。"""
+    paragraphs: list[str] = []
+    paragraph = ""
+    previous = None
+    for segment in transcript.segments:
+        text = re.sub(r"\s+", " ", segment.text).strip()
+        if not text:
+            continue
+        gap = max(0.0, segment.start - previous.end) if previous is not None else 0.0
+        should_break = bool(
+            paragraph
+            and (
+                gap >= _FORCED_PARAGRAPH_PAUSE_SECONDS
+                or (
+                    gap >= _PARAGRAPH_PAUSE_SECONDS
+                    and paragraph[-1] in _SENTENCE_ENDINGS
+                )
+                or (
+                    len(paragraph) >= _TARGET_PARAGRAPH_CHARACTERS
+                    and paragraph[-1] in _SENTENCE_ENDINGS
+                )
+            )
+        )
+        if should_break:
+            paragraphs.append(paragraph)
+            paragraph = text
+        else:
+            paragraph = _join_text_fragments(paragraph, text)
+        previous = segment
+    if paragraph:
+        paragraphs.append(paragraph)
+    return "\n\n".join(paragraphs)
+
+
+def _join_text_fragments(left: str, right: str) -> str:
+    if not left:
+        return right
+    if not right:
+        return left
+    last = left[-1]
+    first = right[0]
+    if first in _CLOSING_PUNCTUATION or last in _OPENING_PUNCTUATION:
+        separator = ""
+    elif last.isascii() and first.isascii() and last.isalnum() and first.isalnum():
+        separator = " "
+    elif last in ".,!?;:" and first.isascii() and first.isalnum():
+        separator = " "
+    else:
+        separator = ""
+    return f"{left}{separator}{right}"
 
 
 def transcript_to_srt(transcript: Transcript) -> str:

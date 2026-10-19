@@ -1,6 +1,7 @@
 from zipfile import ZipFile
 
 from videoflow.exporters import (
+    format_readable_text,
     format_srt_timestamp,
     safe_export_stem,
     transcript_to_srt,
@@ -23,7 +24,44 @@ def test_srt_timestamp_rounds_and_carries() -> None:
 
 
 def test_exported_txt_is_plain_utf8_text() -> None:
-    assert transcript_to_txt(sample_transcript()) == "你好\n世界\n"
+    assert transcript_to_txt(sample_transcript()) == "你好\n\n世界\n"
+
+
+def test_readable_txt_joins_subtitle_fragments_without_inventing_punctuation() -> None:
+    transcript = Transcript((
+        TranscriptSegment(0, 1, "今天我们来讲"),
+        TranscriptSegment(1, 2, "机器学习。"),
+        TranscriptSegment(2.1, 3, "首先，理解"),
+        TranscriptSegment(3, 4, "监督学习"),
+    ))
+
+    assert format_readable_text(transcript) == "今天我们来讲机器学习。首先，理解监督学习"
+
+
+def test_readable_txt_uses_long_pause_only_at_reliable_paragraph_boundary() -> None:
+    transcript = Transcript((
+        TranscriptSegment(0, 1, "第一句。"),
+        TranscriptSegment(4, 5, "第二句！"),
+        TranscriptSegment(12, 13, "没有标点的第三部分"),
+    ))
+
+    assert format_readable_text(transcript) == "第一句。\n\n第二句！\n\n没有标点的第三部分"
+
+
+def test_readable_txt_handles_english_numbers_and_mixed_chinese() -> None:
+    transcript = Transcript((
+        TranscriptSegment(0, 1, "VideoFlow"),
+        TranscriptSegment(1, 2, "version"),
+        TranscriptSegment(2, 3, "0.4.2"),
+        TranscriptSegment(3, 4, "支持CPU"),
+        TranscriptSegment(4, 5, "INT8。"),
+    ))
+
+    assert format_readable_text(transcript) == "VideoFlow version 0.4.2支持CPU INT8。"
+
+
+def test_readable_txt_empty_transcript() -> None:
+    assert format_readable_text(Transcript(())) == ""
 
 
 def test_exported_srt_has_standard_blocks() -> None:

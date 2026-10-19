@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from .models import Transcript
 from .sources.remote_audio import RemoteAudioError, extract_bilibili_audio, extract_stream_audio
 from .sources.xjtu_lms import resolve_lms_replay
-from .transcriber import transcribe_media
+from .transcriber import ProgressCallback, transcribe_media
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +31,10 @@ def transcribe_bilibili_audio(
     browser: str | None,
     profile_name: str | None = None,
     initial_prompt: str | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> OnlineTranscript:
+    if progress_callback is not None:
+        progress_callback("正在提取 B 站独立音频", None, None)
     with extract_bilibili_audio(url, browser=browser) as audio:
         transcript = transcribe_media(
             audio.path,
@@ -39,6 +42,7 @@ def transcribe_bilibili_audio(
             language=language,
             profile_name=profile_name,
             initial_prompt=initial_prompt,
+            progress_callback=progress_callback,
         )
         return OnlineTranscript(title=audio.title, transcript=transcript, source=url)
 
@@ -52,6 +56,7 @@ def transcribe_bilibili_batch(
     profile_name: str | None = None,
     initial_prompt: str | None = None,
     maximum: int = 10,
+    progress_callback: ProgressCallback | None = None,
 ) -> BatchTranscription:
     urls = list(dict.fromkeys(line.strip() for line in raw_urls.splitlines() if line.strip()))
     if not urls:
@@ -60,8 +65,10 @@ def transcribe_bilibili_batch(
         raise ValueError(f"单次最多处理 {maximum} 个链接。")
     successes: list[OnlineTranscript] = []
     failures: list[tuple[str, str]] = []
-    for url in urls:
+    for index, url in enumerate(urls, start=1):
         try:
+            if progress_callback is not None:
+                progress_callback(f"正在处理第 {index}/{len(urls)} 个 B 站链接", index - 1, len(urls))
             successes.append(
                 transcribe_bilibili_audio(
                     url,
@@ -70,6 +77,7 @@ def transcribe_bilibili_batch(
                     browser=browser,
                     profile_name=profile_name,
                     initial_prompt=initial_prompt,
+                    progress_callback=progress_callback,
                 )
             )
         except Exception as exc:
@@ -84,15 +92,33 @@ def transcribe_lms_payload(
     language: str | None,
     profile_name: str | None = None,
     initial_prompt: str | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> OnlineTranscript:
+    def report_extraction(current: float, total: float | None) -> None:
+        if progress_callback is None:
+            return
+        elapsed = max(0, round(current))
+        hours, remainder = divmod(elapsed, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        progress_callback(
+            f"正在提取课程音频（已处理 {hours:02}:{minutes:02}:{seconds:02}）",
+            current,
+            total,
+        )
+
+    if progress_callback is not None:
+        progress_callback("正在验证 LMS 短期任务", None, None)
     replay = resolve_lms_replay(payload)
     failures: list[str] = []
     for stream_url in (replay.stream_url, *replay.fallback_urls):
         try:
+            if progress_callback is not None:
+                progress_callback("正在提取课程音频", None, None)
             with extract_stream_audio(
                 stream_url,
                 replay.title,
                 request_headers=replay.request_headers,
+                progress_callback=report_extraction,
             ) as audio:
                 transcript = transcribe_media(
                     audio.path,
@@ -100,6 +126,7 @@ def transcribe_lms_payload(
                     language=language,
                     profile_name=profile_name,
                     initial_prompt=initial_prompt,
+                    progress_callback=progress_callback,
                 )
                 return OnlineTranscript(
                     title=audio.title,

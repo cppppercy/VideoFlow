@@ -41,6 +41,15 @@ def test_parse_bilibili_bcc_creates_transcript() -> None:
     assert result.text == "第一段\n第二段"
 
 
+def test_parse_bilibili_bcc_converts_chinese_subtitles_to_simplified() -> None:
+    result = parse_bilibili_bcc(
+        {"body": [{"from": 0, "to": 1.25, "content": "我們來學數值計算"}]},
+        language="zh-TW",
+    )
+
+    assert result.text == "我们来学数值计算"
+
+
 def test_parse_bilibili_bcc_rejects_invalid_time() -> None:
     with pytest.raises(BilibiliSubtitleError, match="无效时间码"):
         parse_bilibili_bcc({"body": [{"from": 2, "to": 1, "content": "错误"}]})

@@ -17,10 +17,33 @@ class TranscriptSegment:
 
 
 @dataclass(frozen=True, slots=True)
+class TranscriptionDiagnostics:
+    """一次本地识别的非敏感运行信息，用于判断长音频是否可能提前结束。"""
+
+    media_duration: float | None
+    speech_duration: float | None
+    last_segment_end: float | None
+    model_load_seconds: float
+    inference_seconds: float
+    total_seconds: float
+    cpu_seconds: float
+    peak_memory_mb: float | None
+    pipeline: str
+    coverage_status: str
+
+    @property
+    def realtime_factor(self) -> float | None:
+        if not self.media_duration or self.media_duration <= 0:
+            return None
+        return self.inference_seconds / self.media_duration
+
+
+@dataclass(frozen=True, slots=True)
 class Transcript:
     segments: tuple[TranscriptSegment, ...]
     language: str | None = None
     language_probability: float | None = None
+    diagnostics: TranscriptionDiagnostics | None = None
 
     @property
     def text(self) -> str:

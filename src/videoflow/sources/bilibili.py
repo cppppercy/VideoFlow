@@ -13,6 +13,7 @@ from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 from ..models import Transcript, TranscriptSegment
 from ..runtime import make_temporary_directory
+from ..text_processing import clean_transcription_text
 
 _BILIBILI_HOSTS = {"www.bilibili.com", "bilibili.com"}
 _BVID_PATH = re.compile(r"^/video/(BV[0-9A-Za-z]{10})/?$", re.IGNORECASE)
@@ -73,7 +74,12 @@ def parse_bilibili_bcc(payload: object, *, language: str | None = None) -> Trans
         try:
             start = float(item["from"])
             end = float(item["to"])
-            text = str(item["content"]).strip()
+            raw_text = str(item["content"]).strip()
+            text = (
+                clean_transcription_text(raw_text)
+                if language and language.lower().startswith("zh")
+                else raw_text
+            )
             if text:
                 segments.append(TranscriptSegment(start=start, end=end, text=text))
         except (KeyError, TypeError, ValueError) as exc:

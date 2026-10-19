@@ -37,6 +37,16 @@ def main() -> int:
         print(f"转录失败：{exc}")
         return 1
     print(f"转录完成：{len(transcript.segments)} 个分段，语言：{transcript.language or '未知'}")
+    if transcript.diagnostics is not None:
+        diagnostics = transcript.diagnostics
+        duration = f"{diagnostics.media_duration:.1f}" if diagnostics.media_duration is not None else "未知"
+        last = f"{diagnostics.last_segment_end:.1f}" if diagnostics.last_segment_end is not None else "无"
+        rtf = f"{diagnostics.realtime_factor:.3f}" if diagnostics.realtime_factor is not None else "未知"
+        print(
+            f"诊断：媒体 {duration} 秒，最后字幕 {last} 秒，"
+            f"识别 {diagnostics.inference_seconds:.1f} 秒，RTF {rtf}，"
+            f"覆盖状态 {diagnostics.coverage_status}"
+        )
     print(f"TXT：{txt_path}\nSRT：{srt_path}")
     return 0
 
