@@ -1,11 +1,11 @@
 # VideoFlow 状态
 
-最后更新：2026-10-17
+最后更新：2026-10-19
 
 ## 当前状态
 
 - 当前版本：v0.4.1（LMS 403 兼容性修复、批量推理预设与界面整理）
-- 当前任务：修复用户真实 LMS 回放失败，提高转录速度/可调准确度并整理网页入口
+- 当前任务：v0.4.1 开发与回归检查已完成，并同步到 GitHub
 - 下一任务：用户重启 VideoFlow，在同一已登录 LMS 活动页重新复制短期任务并复验修复后的课程回放。
 
 ## 已完成
@@ -51,6 +51,7 @@
 - 2026-10-17 V0.4.1 自动化：36/36 项测试通过；新增覆盖 LMS `download_url` 优先级、同源请求头、备用地址重试、403 错误脱敏、批量推理参数及词级字幕重分段。`compileall`、`pip check`、浏览器助手 JavaScript 语法及改版 Gradio 页面构造通过；临时启动 `http://127.0.0.1:7862/` 返回 HTTP 200 后已停止测试进程。
 - 2026-10-17 批量推理真实复验：同一段经授权的 5 分 56 秒中文视频上，快速档输出 48 段、1112 字符并耗时 14.46 秒，最长分段 8 秒；旧版 tiny/beam 5 输出 1133 字符并耗时 37.52 秒，快速档约为 2.6 倍速度。均衡档在最终分段上限调整前输出 1087 字符并耗时 33.02 秒。字符数不能证明准确率，关键词和术语仍需人工抽查。
 - 2026-10-17 LMS 用户复现与修复：用户实际进入音频提取阶段后失败。对照当前仍可播放回放的开源客户端发现其明确为回放 CDN 添加 LMS `Origin`/`Referer`，并用 `download_url` 播放；旧实现使用 `play_url` 且没有同源头，符合 HTTP 403 表现。修复后尚未使用用户的短期任务复验，不能描述为真实成功。
+- 2026-10-19 发布前回归：`python -m pytest --basetemp .tmp-pip\pytest-push-final-escalated -p no:cacheprovider` 共 36/36 项通过；`python -m compileall -q src app.py`、`python -m pip check`、浏览器助手 JavaScript 语法检查及 `git diff --check` 均通过。首次受限沙箱内运行因 Windows 临时目录权限失败，改为项目环境在沙箱外重跑后通过，未发现功能断言失败。
 
 ## 未验证与限制
 
@@ -66,6 +67,6 @@
 
 ## Git / 发布
 
-- 本地分支：`main`，跟踪 `origin/main`；提交 V0.4.1 后将领先远程 4 个提交（精确提交号以 `git log -1 --oneline` 为准）。
-- GitHub 远程：`https://github.com/cppppercy/VideoFlow.git`，已公开；本轮新提交尚未推送。尚未创建 Git 标签或 GitHub Release。
+- 本地分支：`main`，跟踪 `origin/main`；V0.2 至 V0.4.1 代码及本状态更新已于 2026-10-19 推送并与远程同步（精确提交号以 `git log -1 --oneline` 为准）。
+- GitHub 远程：`https://github.com/cppppercy/VideoFlow.git`，已公开。尚未创建 Git 标签或 GitHub Release。
 - 版本交接报告：`docs/HANDOVER_V0.1.0.md`、`docs/HANDOVER_V0.2.0.md`。后续发布标签或 GitHub Release 仍须负责人明确批准。
