@@ -29,8 +29,11 @@ class BenchmarkResult:
     inference_seconds: float | None
     realtime_factor: float | None
     peak_memory_mb: float | None
+    peak_gpu_memory_mb: float | None
+    effective_batch_size: int | None
     last_segment_end: float | None
     coverage_status: str | None
+    review_segment_count: int
     cer: float | None
     characters: int
     error: str | None = None
@@ -64,6 +67,7 @@ def run_benchmark(
     initial_prompt: str | None = None,
     reference: str | None = None,
     cold_start: bool = True,
+    refine_low_confidence: bool = False,
 ) -> list[BenchmarkResult]:
     results: list[BenchmarkResult] = []
     for label, model_name, profile_name in configurations:
@@ -76,6 +80,7 @@ def run_benchmark(
                 profile_name=profile_name,
                 language=language,
                 initial_prompt=initial_prompt,
+                refine_low_confidence=refine_low_confidence,
             )
             diagnostics = transcript.diagnostics
             text = format_readable_text(transcript)
@@ -89,8 +94,11 @@ def run_benchmark(
                     inference_seconds=diagnostics.inference_seconds if diagnostics else None,
                     realtime_factor=diagnostics.realtime_factor if diagnostics else None,
                     peak_memory_mb=diagnostics.peak_memory_mb if diagnostics else None,
+                    peak_gpu_memory_mb=diagnostics.peak_gpu_memory_mb if diagnostics else None,
+                    effective_batch_size=diagnostics.effective_batch_size if diagnostics else None,
                     last_segment_end=diagnostics.last_segment_end if diagnostics else None,
                     coverage_status=diagnostics.coverage_status if diagnostics else None,
+                    review_segment_count=diagnostics.review_segment_count if diagnostics else 0,
                     cer=character_error_rate(reference, text) if reference is not None else None,
                     characters=len(normalize_cer_text(text)),
                 )
@@ -106,8 +114,11 @@ def run_benchmark(
                     inference_seconds=None,
                     realtime_factor=None,
                     peak_memory_mb=None,
+                    peak_gpu_memory_mb=None,
+                    effective_batch_size=None,
                     last_segment_end=None,
                     coverage_status=None,
+                    review_segment_count=0,
                     cer=None,
                     characters=0,
                     error=str(exc),
@@ -121,8 +132,8 @@ def results_to_markdown(results: list[BenchmarkResult]) -> str:
         return "未测" if value is None else f"{value:.{digits}f}"
 
     lines = [
-        "| 配置 | 模型 | 管线 | 媒体秒数 | 加载秒数 | 识别秒数 | RTF | 峰值内存 MB | 末条字幕秒数 | 覆盖状态 | CER |",
-        "|---|---|---|---:|---:|---:|---:|---:|---:|---|---:|",
+        "| 配置 | 模型 | 管线 | 媒体秒数 | 加载秒数 | 识别秒数 | RTF | 峰值内存 MB | 峰值显存 MB | 批量 | 需复核段 | 末条字幕秒数 | 覆盖状态 | CER |",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|",
     ]
     for item in results:
         coverage = f"失败：{item.error}" if item.error else (item.coverage_status or "未知")
@@ -131,7 +142,10 @@ def results_to_markdown(results: list[BenchmarkResult]) -> str:
             f"{number(item.media_seconds, 1)} | "
             f"{number(item.model_load_seconds)} | {number(item.inference_seconds)} | "
             f"{number(item.realtime_factor, 3)} | {number(item.peak_memory_mb, 1)} | "
-            f"{number(item.last_segment_end, 1)} | {coverage} | {number(item.cer, 4)} |"
+            f"{number(item.peak_gpu_memory_mb, 1)} | "
+            f"{item.effective_batch_size if item.effective_batch_size is not None else '未测'} | "
+            f"{item.review_segment_count} | {number(item.last_segment_end, 1)} | "
+            f"{coverage} | {number(item.cer, 4)} |"
         )
     return "\n".join(lines)
 
@@ -148,6 +162,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--language", default="zh", help="语言代码；留空表示自动识别")
     parser.add_argument("--prompt", help="课程关键词")
     parser.add_argument("--reference", help="人工核对的 UTF-8 参考稿；提供后计算 CER")
+    parser.add_argument(
+        "--refine-low-confidence",
+        action="store_true",
+        help="启用可疑片段二次识别，便于与默认结果比较",
+    )
     parser.add_argument("--reuse-model", action="store_true", help="允许复用进程内模型缓存")
     parser.add_argument("--json", dest="json_path", help="可选 JSON 结果路径")
     return parser
@@ -182,6 +201,7 @@ def main() -> int:
             initial_prompt=args.prompt,
             reference=reference,
             cold_start=not args.reuse_model,
+            refine_low_confidence=args.refine_low_confidence,
         )
     except (OSError, ValueError) as exc:
         print(f"基准配置失败：{exc}")

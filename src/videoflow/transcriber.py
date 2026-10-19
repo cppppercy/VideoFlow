@@ -6,6 +6,7 @@ from functools import lru_cache
 import importlib.util
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from threading import Event, Lock, Thread
@@ -25,6 +26,7 @@ _SENTENCE_ENDINGS = ("。", "！", "？", "!", "?", ";", "；")
 LONG_MEDIA_THRESHOLD_SECONDS = 20 * 60
 LONG_MEDIA_CHUNK_SECONDS = 5 * 60
 LONG_MEDIA_OVERLAP_SECONDS = 3.0
+MAX_REFINEMENT_SEGMENTS = 12
 ProgressCallback = Callable[[str, float | None, float | None], None]
 
 
@@ -73,26 +75,40 @@ class _CombinedTranscriptionInfo:
     language_probability: float | None
     duration: float
     duration_after_vad: float | None
+    effective_batch_size: int | None = None
 
 
 class _ResourceMonitor:
-    """用标准库/系统 API 低频采样当前进程 RSS。"""
+    """低频采样当前进程 RSS，并在 GPU 模式下尽力记录显存峰值。"""
 
-    def __init__(self) -> None:
+    def __init__(self, *, monitor_gpu: bool = False) -> None:
         self._stop = Event()
         self._thread: Thread | None = None
         self.peak_memory_mb: float | None = None
+        self.peak_gpu_memory_mb: float | None = None
+        self.gpu_name: str | None = None
+        self._monitor_gpu = monitor_gpu
 
     def __enter__(self) -> "_ResourceMonitor":
         if _current_rss_mb() is None:
             return self
 
+        if self._monitor_gpu:
+            self.gpu_name = _gpu_name()
+            self.peak_gpu_memory_mb = _current_gpu_process_memory_mb()
+
         def sample() -> None:
-            while not self._stop.wait(0.25):
+            while not self._stop.wait(0.5):
                 rss = _current_rss_mb()
                 if rss is None:
                     return
                 self.peak_memory_mb = max(self.peak_memory_mb or 0.0, rss)
+                if self._monitor_gpu:
+                    gpu_memory = _current_gpu_process_memory_mb()
+                    if gpu_memory is not None:
+                        self.peak_gpu_memory_mb = max(
+                            self.peak_gpu_memory_mb or 0.0, gpu_memory
+                        )
 
         try:
             self.peak_memory_mb = _current_rss_mb()
@@ -153,6 +169,59 @@ def _current_rss_mb() -> float | None:
         return float(rss) / divisor
     except (AttributeError, ImportError, OSError, ValueError):
         return None
+
+
+def _run_nvidia_smi(arguments: list[str]) -> str | None:
+    """读取本机 NVIDIA 驱动公开的统计值；无驱动时静默降级。"""
+    try:
+        completed = subprocess.run(
+            ["nvidia-smi", *arguments],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=1.5,
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout
+
+
+def _gpu_name() -> str | None:
+    output = _run_nvidia_smi(["--query-gpu=name", "--format=csv,noheader"])
+    if not output:
+        return None
+    name = output.splitlines()[0].strip()
+    return name or None
+
+
+def _gpu_total_memory_mb() -> int | None:
+    output = _run_nvidia_smi(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
+    if not output:
+        return None
+    match = re.search(r"\d+", output.splitlines()[0])
+    return int(match.group()) if match else None
+
+
+def _current_gpu_process_memory_mb() -> float | None:
+    """仅统计当前 Python 进程，避免把桌面程序的显存混入诊断。"""
+    output = _run_nvidia_smi(
+        ["--query-compute-apps=pid,used_gpu_memory", "--format=csv,noheader,nounits"]
+    )
+    if not output:
+        return None
+    process_id = str(os.getpid())
+    for line in output.splitlines():
+        columns = [column.strip() for column in line.split(",")]
+        if len(columns) < 2 or columns[0] != process_id:
+            continue
+        match = re.search(r"\d+(?:\.\d+)?", columns[1])
+        if match:
+            return float(match.group())
+    return None
 
 
 def _notify(
@@ -249,6 +318,179 @@ def _recommended_cpu_threads() -> int:
         return value
     logical_processors = os.cpu_count() or 4
     return max(1, min(8, logical_processors // 2 if logical_processors > 4 else logical_processors))
+
+
+def _recommended_gpu_batch_size(profile: TranscriptionProfile) -> int:
+    """在不探测显存内容的前提下，按总显存选取保守的 GPU 批量大小。
+
+    可通过 VIDEOFLOW_GPU_BATCH_SIZE=1..8 固定，方便在同一台机器上做可复现基准。
+    GPU 内存不足时，实际识别会自动逐级退回到更小批量。
+    """
+    configured = os.environ.get("VIDEOFLOW_GPU_BATCH_SIZE")
+    if configured:
+        try:
+            value = int(configured)
+        except ValueError as exc:
+            raise TranscriptionError("VIDEOFLOW_GPU_BATCH_SIZE 必须是 1–8 的整数。") from exc
+        if not 1 <= value <= 8:
+            raise TranscriptionError("VIDEOFLOW_GPU_BATCH_SIZE 必须是 1–8 的整数。")
+        return value
+    if profile.device != "cuda":
+        return profile.batch_size
+    total_memory_mb = _gpu_total_memory_mb()
+    if total_memory_mb is None:
+        return profile.batch_size
+    if total_memory_mb >= 8_000:
+        return 8
+    if total_memory_mb >= 6_000:
+        return 4
+    return 2
+
+
+def _is_gpu_out_of_memory(error: Exception) -> bool:
+    message = str(error).lower()
+    return "out of memory" in message or "cuda error 2" in message or "alloc" in message and "cuda" in message
+
+
+def _run_batched_transcription(
+    engine: Any,
+    path: Path,
+    *,
+    options: dict[str, Any],
+    batch_size: int,
+    allow_gpu_fallback: bool,
+    progress_callback: ProgressCallback | None = None,
+) -> tuple[list[Any], Any, int]:
+    """物化一个批次的输出，以便 CUDA 内存不足时安全地从头重试该批次。"""
+    current_batch_size = batch_size
+    while True:
+        attempt_options = dict(options)
+        attempt_options["batch_size"] = current_batch_size
+        try:
+            raw_segments, info = engine.transcribe(str(path), **attempt_options)
+            return list(raw_segments), info, current_batch_size
+        except Exception as exc:
+            if not allow_gpu_fallback or current_batch_size <= 1 or not _is_gpu_out_of_memory(exc):
+                raise
+            next_batch_size = max(1, current_batch_size // 2)
+            _notify(
+                progress_callback,
+                f"GPU 显存不足，正从批量 {current_batch_size} 重试为 {next_batch_size}",
+            )
+            current_batch_size = next_batch_size
+
+
+def _segment_review_reason(segment: Any) -> str | None:
+    """依据模型原始启发式指标标记应抽查的字幕，不把它误称为准确率。"""
+    average_log_probability = getattr(segment, "avg_logprob", None)
+    compression_ratio = getattr(segment, "compression_ratio", None)
+    no_speech_probability = getattr(segment, "no_speech_prob", None)
+    reasons: list[str] = []
+    try:
+        if average_log_probability is not None and float(average_log_probability) < -1.0:
+            reasons.append("低置信")
+        if compression_ratio is not None and float(compression_ratio) > 2.4:
+            reasons.append("疑似重复")
+        if no_speech_probability is not None and float(no_speech_probability) > 0.8:
+            reasons.append("可能无语音")
+    except (TypeError, ValueError):
+        return None
+    return "、".join(reasons) or None
+
+
+def _segment_quality_score(segments: list[Any]) -> float:
+    """以模型自身启发式指标比较同一音频片段的两个候选，分数不等于真实准确率。"""
+    if not segments:
+        return float("-inf")
+    scores: list[float] = []
+    for segment in segments:
+        try:
+            score = float(getattr(segment, "avg_logprob", -10.0))
+            score -= max(0.0, float(getattr(segment, "compression_ratio", 0.0)) - 2.4)
+            score -= max(0.0, float(getattr(segment, "no_speech_prob", 0.0)) - 0.6)
+        except (TypeError, ValueError):
+            score = -10.0
+        scores.append(score)
+    return sum(scores) / len(scores)
+
+
+def _refine_uncertain_segments(
+    model: Any,
+    path: Path,
+    segments: list[Any],
+    *,
+    options: dict[str, Any],
+    maximum: int,
+    progress_callback: ProgressCallback | None,
+) -> tuple[list[Any], int]:
+    """只以更高 beam 重试启发式可疑段，并仅接受模型分数更高的候选。
+
+    该功能避免整段课程改跑更慢模型；它是可选的模型内二次尝试，不宣称等同于 CER 提升。
+    """
+    if maximum <= 0:
+        return segments, 0
+    result: list[Any] = []
+    attempted = 0
+    for original in segments:
+        if _segment_review_reason(original) is None or attempted >= maximum:
+            result.append(original)
+            continue
+        start = max(0.0, float(getattr(original, "start", 0.0)))
+        end = max(start + 0.05, float(getattr(original, "end", start + 0.05)))
+        retry_options = dict(options)
+        retry_options.update(
+            {
+                "vad_filter": False,
+                "clip_timestamps": [start, end],
+                "beam_size": max(8, int(options.get("beam_size", 5))),
+                "temperature": 0.0,
+                "condition_on_previous_text": False,
+                "word_timestamps": True,
+            }
+        )
+        retry_options.pop("vad_parameters", None)
+        _notify(
+            progress_callback,
+            f"正在精修可疑片段 {attempted + 1}/{maximum}",
+            start,
+            None,
+        )
+        try:
+            retry_iter, _ = model.transcribe(str(path), **retry_options)
+            candidates = list(retry_iter)
+        except Exception:
+            # 精修是辅助路径；任何单段失败都必须保留已得到的初稿。
+            result.append(original)
+            attempted += 1
+            continue
+        attempted += 1
+        if _segment_quality_score(candidates) > _segment_quality_score([original]):
+            result.extend(candidates)
+        else:
+            result.append(original)
+    return result, attempted
+
+
+def normalize_hotwords(value: str | None) -> str | None:
+    """将课程术语整理为短、去重且可预测的 hotwords 输入。"""
+    if not value or not value.strip():
+        return None
+    candidates = re.split(r"[,，;；\n\r\t]+", value)
+    terms: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        term = " ".join(candidate.strip().split())
+        if not term:
+            continue
+        key = term.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        terms.append(term)
+        if len(terms) >= 80:
+            break
+    joined = ", ".join(terms)
+    return joined[:2000] or None
 
 
 def cuda_device_available() -> bool:
@@ -353,6 +595,8 @@ def _transcribe_long_media_chunked(
     media_duration: float,
     options: dict[str, Any],
     profile: TranscriptionProfile,
+    batch_size: int,
+    refine_low_confidence: bool,
     progress_callback: ProgressCallback | None,
 ) -> tuple[tuple[TranscriptSegment, ...], _CombinedTranscriptionInfo]:
     """分块后顺序批量识别，兼顾长课程的内存上限与 CPU 吞吐。"""
@@ -363,6 +607,8 @@ def _transcribe_long_media_chunked(
     speech_duration = 0.0
     has_speech_duration = False
     last_reported = 0.0
+    lowest_batch_size = batch_size
+    remaining_refinements = MAX_REFINEMENT_SEGMENTS if refine_low_confidence else 0
     chunk_count = max(
         1,
         int((media_duration + LONG_MEDIA_CHUNK_SECONDS - 1) // LONG_MEDIA_CHUNK_SECONDS),
@@ -390,12 +636,29 @@ def _transcribe_long_media_chunked(
 
             chunk_options = dict(options)
             chunk_options["language"] = detected_language
-            chunk_options["batch_size"] = profile.batch_size
             chunk_options["word_timestamps"] = True
             chunk_options["vad_parameters"] = {
                 "min_silence_duration_ms": profile.min_silence_duration_ms
             }
-            raw_segments, info = engine.transcribe(str(chunk_path), **chunk_options)
+            raw_segments, info, used_batch_size = _run_batched_transcription(
+                engine,
+                chunk_path,
+                options=chunk_options,
+                batch_size=batch_size,
+                allow_gpu_fallback=profile.device == "cuda",
+                progress_callback=progress_callback,
+            )
+            lowest_batch_size = min(lowest_batch_size, used_batch_size)
+            if remaining_refinements:
+                raw_segments, attempted = _refine_uncertain_segments(
+                    model,
+                    chunk_path,
+                    raw_segments,
+                    options=chunk_options,
+                    maximum=remaining_refinements,
+                    progress_callback=progress_callback,
+                )
+                remaining_refinements -= attempted
             if detected_language is None:
                 detected_language = getattr(info, "language", None)
                 language_probability = getattr(info, "language_probability", None)
@@ -421,7 +684,12 @@ def _transcribe_long_media_chunked(
                     midpoint >= keep_end and chunk_index + 1 < chunk_count
                 ):
                     continue
-                converted = TranscriptSegment(global_start, global_end, segment.text)
+                converted = TranscriptSegment(
+                    global_start,
+                    global_end,
+                    segment.text,
+                    review_reason=segment.review_reason,
+                )
                 converted_items.append(converted)
                 last_reported = max(last_reported, converted.end)
                 _notify(
@@ -444,6 +712,7 @@ def _transcribe_long_media_chunked(
         language_probability=language_probability,
         duration=media_duration,
         duration_after_vad=min(speech_duration, media_duration) if has_speech_duration else None,
+        effective_batch_size=lowest_batch_size,
     )
 
 
@@ -468,6 +737,7 @@ def _append_word_group(
     words: list[Any],
     *,
     simplify_chinese: bool,
+    review_reason: str | None,
 ) -> None:
     if not words:
         return
@@ -475,7 +745,12 @@ def _append_word_group(
     text = clean_transcription_text(raw_text) if simplify_chinese else raw_text
     if text:
         converted.append(
-            TranscriptSegment(start=float(words[0].start), end=float(words[-1].end), text=text)
+            TranscriptSegment(
+                start=float(words[0].start),
+                end=float(words[-1].end),
+                text=text,
+                review_reason=review_reason,
+            )
         )
 
 
@@ -488,6 +763,7 @@ def transcribe_media(
     compute_type: str = "int8",
     profile_name: str | None = None,
     initial_prompt: str | None = None,
+    refine_low_confidence: bool = False,
     model_factory: Callable[[str, str, str], Any] | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> Transcript:
@@ -524,10 +800,13 @@ def transcribe_media(
     model_load_seconds = 0.0
     inference_seconds = 0.0
     pipeline = "standard"
+    effective_batch_size = profile.batch_size if profile is not None else None
     _notify(progress_callback, "正在检查媒体时长", 0.0, media_duration)
     try:
         # 模型加载与推理共用一把锁，避免两个网页任务同时首次加载模型而瞬间占满内存。
-        with _MODEL_RUNTIME_LOCK, _ResourceMonitor() as resources:
+        with _MODEL_RUNTIME_LOCK, _ResourceMonitor(
+            monitor_gpu=device == "cuda"
+        ) as resources:
             model_started_at = perf_counter()
             _notify(progress_callback, "正在加载模型", 0.0, media_duration)
             model = factory(model_name, device, compute_type)
@@ -546,28 +825,32 @@ def transcribe_media(
                 options["repetition_penalty"] = 1.1
                 options["no_repeat_ngram_size"] = 3
                 options["hallucination_silence_threshold"] = 2.0
-            if initial_prompt and initial_prompt.strip():
+            hotwords = normalize_hotwords(initial_prompt)
+            if hotwords:
                 # hotwords 专门用于给识别器提供术语提示；相比 initial_prompt，
                 # 它不会把整段提示当成第一窗口之前已经说过的正文。
-                options["hotwords"] = initial_prompt.strip()[:2000]
+                options["hotwords"] = hotwords
             split_words = profile is not None
             if profile is not None and model_factory is None and use_long_media_pipeline:
                 pipeline = "chunked-batched"
                 inference_started_at = perf_counter()
                 _notify(progress_callback, "正在分块识别长媒体", 0.0, media_duration)
+                effective_batch_size = _recommended_gpu_batch_size(profile)
                 converted_segments, info = _transcribe_long_media_chunked(
                     model,
                     path,
                     media_duration=media_duration,
                     options=options,
                     profile=profile,
+                    batch_size=effective_batch_size,
+                    refine_low_confidence=refine_low_confidence,
                     progress_callback=progress_callback,
                 )
+                effective_batch_size = info.effective_batch_size
                 inference_seconds = perf_counter() - inference_started_at
             elif profile is not None and model_factory is None:
                 engine = _default_batched_factory(model)
                 pipeline = "batched"
-                options["batch_size"] = profile.batch_size
                 options["word_timestamps"] = True
                 options["vad_parameters"] = {
                     "min_silence_duration_ms": profile.min_silence_duration_ms
@@ -583,7 +866,27 @@ def transcribe_media(
             if pipeline != "chunked-batched":
                 inference_started_at = perf_counter()
                 _notify(progress_callback, "正在识别语音", 0.0, media_duration)
-                segments, info = engine.transcribe(str(path), **options)
+                if profile is not None and model_factory is None:
+                    effective_batch_size = _recommended_gpu_batch_size(profile)
+                    segments, info, effective_batch_size = _run_batched_transcription(
+                        engine,
+                        path,
+                        options=options,
+                        batch_size=effective_batch_size,
+                        allow_gpu_fallback=profile.device == "cuda",
+                        progress_callback=progress_callback,
+                    )
+                    if refine_low_confidence:
+                        segments, _ = _refine_uncertain_segments(
+                            model,
+                            path,
+                            segments,
+                            options=options,
+                            maximum=MAX_REFINEMENT_SEGMENTS,
+                            progress_callback=progress_callback,
+                        )
+                else:
+                    segments, info = engine.transcribe(str(path), **options)
                 converted_items: list[TranscriptSegment] = []
                 detected_language = language or getattr(info, "language", None)
                 for converted in _convert_model_segments_iter(
@@ -624,6 +927,10 @@ def transcribe_media(
         peak_memory_mb=resources.peak_memory_mb,
         pipeline=pipeline,
         coverage_status=_coverage_status(measured_duration, speech_duration, last_segment_end),
+        effective_batch_size=effective_batch_size,
+        gpu_name=resources.gpu_name,
+        peak_gpu_memory_mb=resources.peak_gpu_memory_mb,
+        review_segment_count=sum(1 for item in converted_segments if item.review_reason),
     )
     _notify(progress_callback, "识别结束，正在生成结果", measured_duration, measured_duration)
     return Transcript(
@@ -643,27 +950,53 @@ def _convert_model_segments_iter(
     """逐个输出转换后的字幕段，使长音频可以持续报告实际识别位置。"""
     for item in segments:
         words = getattr(item, "words", None) if split_words else None
+        review_reason = _segment_review_reason(item)
         if not words:
             raw_text = str(item.text).strip()
             text = clean_transcription_text(raw_text) if simplify_chinese else raw_text
             if text:
-                yield TranscriptSegment(start=float(item.start), end=float(item.end), text=text)
+                yield TranscriptSegment(
+                    start=float(item.start),
+                    end=float(item.end),
+                    text=text,
+                    review_reason=review_reason,
+                )
             continue
 
         converted: list[TranscriptSegment] = []
         group: list[Any] = []
         for word in words:
             if group and float(word.start) - float(group[-1].end) >= 0.8:
-                _append_word_group(converted, group, simplify_chinese=simplify_chinese)
+                _append_word_group(
+                    converted,
+                    group,
+                    simplify_chinese=simplify_chinese,
+                    review_reason=review_reason,
+                )
                 group = []
             if group and float(word.end) - float(group[0].start) > 8.0:
-                _append_word_group(converted, group, simplify_chinese=simplify_chinese)
+                _append_word_group(
+                    converted,
+                    group,
+                    simplify_chinese=simplify_chinese,
+                    review_reason=review_reason,
+                )
                 group = []
             group.append(word)
             duration = float(group[-1].end) - float(group[0].start)
             text = "".join(str(part.word) for part in group).strip()
             if duration >= 2.0 and text.endswith(_SENTENCE_ENDINGS):
-                _append_word_group(converted, group, simplify_chinese=simplify_chinese)
+                _append_word_group(
+                    converted,
+                    group,
+                    simplify_chinese=simplify_chinese,
+                    review_reason=review_reason,
+                )
                 group = []
-        _append_word_group(converted, group, simplify_chinese=simplify_chinese)
+        _append_word_group(
+            converted,
+            group,
+            simplify_chinese=simplify_chinese,
+            review_reason=review_reason,
+        )
         yield from converted

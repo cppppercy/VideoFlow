@@ -40,7 +40,10 @@ _SYSTEM_AUDIO_RECORDER = SystemAudioRecorder(_EXPORT_STORE.path)
 
 
 def _result_table(transcript: Any) -> list[list[str]]:
-    return [[f"{item.start:.3f}", f"{item.end:.3f}", item.text] for item in transcript.segments]
+    return [
+        [f"{item.start:.3f}", f"{item.end:.3f}", item.text, item.review_reason or ""]
+        for item in transcript.segments
+    ]
 
 
 def _failure_result(error: Exception) -> tuple[str, list[list[str]], str, str, None, None]:
@@ -77,6 +80,14 @@ def _diagnostic_status(prefix: str, transcript: Any) -> str:
     details += f"，处理方式 {pipeline_labels.get(diagnostics.pipeline, diagnostics.pipeline)}"
     if diagnostics.peak_memory_mb is not None:
         details += f"，进程峰值内存约 {diagnostics.peak_memory_mb:.0f} MB"
+    if diagnostics.effective_batch_size is not None:
+        details += f"，批量大小 {diagnostics.effective_batch_size}"
+    if diagnostics.gpu_name:
+        details += f"，GPU {diagnostics.gpu_name}"
+        if diagnostics.peak_gpu_memory_mb is not None:
+            details += f"，本进程峰值显存约 {diagnostics.peak_gpu_memory_mb:.0f} MB"
+    if diagnostics.review_segment_count:
+        details += f"，已标记 {diagnostics.review_segment_count} 段需复核"
     if diagnostics.coverage_status == "needs_review":
         suffix = "。最后字幕与媒体末尾相差较大，请检查尾部是否为静音或发生遗漏；本次结果未标记为完整成功。"
     elif diagnostics.coverage_status == "no_speech":
@@ -105,6 +116,7 @@ def process_upload(
     profile_name: str,
     language: str | None,
     initial_prompt: str | None,
+    refine_low_confidence: bool = False,
     progress_callback: Callable[[str, float | None, float | None], None] | None = None,
 ) -> tuple[str, list[list[str]], str, str, str | None, str | None]:
     """UI 回调。导出文件只在进程的临时目录内保存。"""
@@ -116,6 +128,7 @@ def process_upload(
             profile_name=profile_name,
             language=language or None,
             initial_prompt=initial_prompt,
+            refine_low_confidence=refine_low_confidence,
             progress_callback=progress_callback,
         )
         language_label = transcript.language or "未知"
@@ -172,6 +185,7 @@ def process_bilibili_audio_batch(
     browser: str | None,
     initial_prompt: str | None,
     confirmed: bool,
+    refine_low_confidence: bool = False,
     progress_callback: Callable[[str, float | None, float | None], None] | None = None,
 ) -> tuple[str, str, str | None]:
     """批量提取 B 站独立音频流并转录，完整视频不会作为回退格式下载。"""
@@ -185,6 +199,7 @@ def process_bilibili_audio_batch(
             browser=browser or None,
             profile_name=profile_name,
             initial_prompt=initial_prompt,
+            refine_low_confidence=refine_low_confidence,
             progress_callback=progress_callback,
         )
         report_lines = [
@@ -213,6 +228,7 @@ def process_lms_replay(
     language: str | None,
     initial_prompt: str | None,
     confirmed: bool,
+    refine_low_confidence: bool = False,
     progress_callback: Callable[[str, float | None, float | None], None] | None = None,
 ) -> tuple[str, str, list[list[str]], str, str, str | None, str | None]:
     """使用浏览器助手提供的一次性任务提取课程音频并转录；首项用于清空任务框。"""
@@ -225,6 +241,7 @@ def process_lms_replay(
             language=language or None,
             profile_name=profile_name,
             initial_prompt=initial_prompt,
+            refine_low_confidence=refine_low_confidence,
             progress_callback=progress_callback,
         )
         transcript = result.transcript
@@ -262,6 +279,7 @@ def stop_system_audio_and_transcribe(
     profile_name: str,
     language: str | None,
     initial_prompt: str | None,
+    refine_low_confidence: bool = False,
     progress_callback: Callable[[str, float | None, float | None], None] | None = None,
 ) -> tuple[str, list[list[str]], str, str, str | None, str | None]:
     """停止录音后立即使用既有本地转录链路；原始 WAV 随后删除。"""
@@ -272,6 +290,7 @@ def stop_system_audio_and_transcribe(
             profile_name=profile_name,
             language=language or None,
             initial_prompt=initial_prompt,
+            refine_low_confidence=refine_low_confidence,
             progress_callback=progress_callback,
         )
         txt_path, srt_path = write_exports(transcript, _EXPORT_STORE.path, "system-audio-transcript")
@@ -311,6 +330,7 @@ def create_app() -> Any:
         profile_name: str,
         language: str | None,
         initial_prompt: str | None,
+        refine_low_confidence: bool,
         progress: Any = gr.Progress(),
     ) -> tuple[str, list[list[str]], str, str, str | None, str | None]:
         return process_upload(
@@ -318,6 +338,7 @@ def create_app() -> Any:
             profile_name,
             language,
             initial_prompt,
+            refine_low_confidence,
             progress_callback=_gradio_progress_callback(progress),
         )
 
@@ -327,6 +348,7 @@ def create_app() -> Any:
         language: str | None,
         browser: str | None,
         initial_prompt: str | None,
+        refine_low_confidence: bool,
         confirmed: bool,
         progress: Any = gr.Progress(),
     ) -> tuple[str, str, str | None]:
@@ -337,6 +359,7 @@ def create_app() -> Any:
             browser,
             initial_prompt,
             confirmed,
+            refine_low_confidence,
             progress_callback=_gradio_progress_callback(progress),
         )
 
@@ -345,6 +368,7 @@ def create_app() -> Any:
         profile_name: str,
         language: str | None,
         initial_prompt: str | None,
+        refine_low_confidence: bool,
         confirmed: bool,
         progress: Any = gr.Progress(),
     ) -> tuple[str, str, list[list[str]], str, str, str | None, str | None]:
@@ -354,6 +378,7 @@ def create_app() -> Any:
             language,
             initial_prompt,
             confirmed,
+            refine_low_confidence,
             progress_callback=_gradio_progress_callback(progress),
         )
 
@@ -361,12 +386,14 @@ def create_app() -> Any:
         profile_name: str,
         language: str | None,
         initial_prompt: str | None,
+        refine_low_confidence: bool,
         progress: Any = gr.Progress(),
     ) -> tuple[str, list[list[str]], str, str, str | None, str | None]:
         return stop_system_audio_and_transcribe(
             profile_name,
             language,
             initial_prompt,
+            refine_low_confidence,
             progress_callback=_gradio_progress_callback(progress),
         )
 
@@ -389,6 +416,10 @@ def create_app() -> Any:
                 placeholder="例如：数值计算，线性方程组，高斯消去法，残值，舍入误差",
                 lines=2,
             )
+            refine_low_confidence = gr.Checkbox(
+                label="精修可疑片段（可选：最多 12 段，以更高 beam 重试）",
+                value=False,
+            )
             gpu_note = (
                 "已检测到 NVIDIA CUDA：可选择“GPU 增强”，使用 turbo 提高准确度且避免 CPU small 的慢速。"
                 if has_cuda
@@ -400,6 +431,8 @@ def create_app() -> Any:
                 "短音频使用批量推理，超过 20 分钟时自动按 5 分钟"
                 "分块批量识别。中文结果会统一转换为简体，并压缩明显的重复幻觉。"
                 "术语热词会通过专用 hotwords 参数提示模型，不会作为正文前缀。"
+                "勾选精修后，程序只会重试模型标记为低置信或异常重复的少量片段；"
+                "它是启发式优化，不替代人工抽查。"
                 f"首次使用对应模型时需要下载。{gpu_note}"
             )
 
@@ -481,7 +514,11 @@ def create_app() -> Any:
                     recording_start = gr.Button("开始录制电脑声音")
                     recording_stop = gr.Button("停止录制并转录", variant="primary")
         status = gr.Textbox(label="处理状态", interactive=False)
-        table = gr.Dataframe(headers=["开始（秒）", "结束（秒）", "文本"], label="字幕分段", interactive=False)
+        table = gr.Dataframe(
+            headers=["开始（秒）", "结束（秒）", "文本", "复核提示"],
+            label="字幕分段",
+            interactive=False,
+        )
         full_text = gr.Textbox(label="全文（可复制）", lines=12)
         srt_text = gr.Textbox(label="SRT 内容（可复制）", lines=12)
         with gr.Row():
@@ -489,7 +526,7 @@ def create_app() -> Any:
             srt_download = gr.File(label="下载 SRT", interactive=False)
         run_button.click(
             upload_with_progress,
-            [media, profile, language, initial_prompt],
+            [media, profile, language, initial_prompt, refine_low_confidence],
             [status, table, full_text, srt_text, txt_download, srt_download],
         )
         bilibili_button.click(
@@ -505,19 +542,20 @@ def create_app() -> Any:
                 language,
                 bilibili_audio_browser,
                 initial_prompt,
+                refine_low_confidence,
                 bilibili_audio_consent,
             ],
             [bilibili_batch_status, bilibili_batch_report, bilibili_batch_zip],
         )
         lms_button.click(
             lms_with_progress,
-            [lms_payload, profile, language, initial_prompt, lms_consent],
+            [lms_payload, profile, language, initial_prompt, refine_low_confidence, lms_consent],
             [lms_payload, status, table, full_text, srt_text, txt_download, srt_download],
         )
         recording_start.click(start_system_audio_recording, [recording_consent], [status])
         recording_stop.click(
             recording_with_progress,
-            [profile, language, initial_prompt],
+            [profile, language, initial_prompt, refine_low_confidence],
             [status, table, full_text, srt_text, txt_download, srt_download],
         )
 

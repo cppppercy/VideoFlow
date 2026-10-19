@@ -4,9 +4,9 @@
 
 ## 当前状态
 
-- 当前版本：v0.4.2（长视频稳定性、转录诊断、自然段 TXT 与本机基准工具）
-- 当前任务：v0.4.2 长视频、GPU turbo、简体中文、术语热词及诊断改动已完成并推送
-- 下一任务：用户重启应用后，使用 60–90 分钟真实课程复验 LMS 登录态、GPU turbo 准确率、分块进度、媒体时长和最后字幕位置；提供 2–3 分钟人工参考稿后再决定后续识别引擎优化。
+- 当前版本：v0.4.3（GPU 自适应批量、显存诊断、可疑分段标记与可选精修）
+- 当前任务：完成 v0.4.3 回归、实际 GPU 基准和 Git 同步；FunASR/SenseVoice/Paraformer 仅在隔离环境中评估，不替换已验证的默认路径。
+- 下一任务：使用 2–3 分钟真实课程人工参考稿，比较 turbo 默认/精修、SenseVoice 和 Paraformer 的 CER、术语命中、时间戳质量、速度与资源，再决定是否新增可选中文后端。
 
 ## 已完成
 
@@ -39,6 +39,10 @@
 - 完成 `docs/TRANSCRIPTION_DIAGNOSIS.md`、`docs/ASR_BENCHMARK.md`、v0.4.2 发布说明与交接摘要；未加入尚无 CER 证据的 FunASR、SenseVoice 或 whisper.cpp 强制依赖。
 
 ## 验证记录
+
+- 2026-10-19 v0.4.3 开发中：新增本进程 GPU 显存探测、8 GB 显存下的保守批量 8、CUDA OOM 分级回退、热词标准化、模型启发式复核提示和最多 12 段的可选高 beam 精修；新增单元测试覆盖批量选择、OOM 回退、热词去重、低置信标记和候选接受规则。精修依据模型内部概率与重复指标，不是 CER。
+- 2026-10-19 v0.4.3 回归：`python -m pytest --basetemp .tmp-pip\pytest-v043-full -p no:cacheprovider` 为 65/65 通过；`compileall`、`pip check`、浏览器助手 JavaScript 语法、Gradio `create_app()` 与 `git diff --check` 通过。临时 4 秒正弦音频在 GPU turbo 上实际选择批量 8、识别 0.5 秒、RTF 0.124、识别为无语音并正确报告 RTX 4060 名称；任务太短，驱动未暴露可采样的当前进程峰值显存，故该单次未得到显存数值。
+- 2026-10-19 中文替代引擎可行性检查：在隔离 Python 3.9 环境中成功导入 FunASR 1.3.1、PyTorch CPU 与 torchaudio；官方 SenseVoiceSmall 权重下载约 893 MB，未在本轮完成，也尚未验证可与 VideoFlow 时间戳/SRT 结构兼容。隔离环境约 1.7 GB，已删除；未加入项目依赖、未接入网页，也未将其描述为可用功能。
 
 - `python -m pytest --basetemp .tmp-pip\\pytest-v04-final -p no:cacheprovider`：31 项单元测试通过（Python 3.13.7）。
 - `python -m compileall -q src app.py`：通过。

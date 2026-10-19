@@ -1,16 +1,24 @@
 # ASR 质量与速度基准
 
-版本：v0.4.2
+版本：v0.4.3
 
 环境：Windows、Python 3.13.7、CPU INT8、faster-whisper 1.2.1
 
 ## 复现工具
 
 ```powershell
-python -m videoflow.benchmark "D:\media\course-sample.mp4" --profiles fast,balanced,accurate --models base,small --language zh --reference "D:\media\reference.txt" --json benchmark.json
+python -m videoflow.benchmark "D:\media\course-sample.mp4" --profiles fast,balanced,accurate,gpu_turbo --models base,small --language zh --reference "D:\media\reference.txt" --json benchmark.json
 ```
 
-工具对每个配置记录媒体时长、模型加载时间、推理时间、RTF、进程峰值内存、最后字幕时间、覆盖状态和输出字符数。只有提供同一测试片段的人工参考稿时才计算 CER；字符数不能代替准确率。
+工具对每个配置记录媒体时长、模型加载时间、推理时间、RTF、进程峰值内存、当前 Python 进程峰值显存、实际批量大小、需复核分段数、最后字幕时间、覆盖状态和输出字符数。只有提供同一测试片段的人工参考稿时才计算 CER；字符数、模型概率和需复核段数量都不能代替准确率。
+
+要评估可疑片段精修，可在同一参考稿上额外运行一次：
+
+```powershell
+python -m videoflow.benchmark "D:\media\course-sample.mp4" --profiles gpu_turbo --language zh --reference "D:\media\reference.txt" --refine-low-confidence
+```
+
+GPU 默认按总显存保守选批量；8 GB 设备优先尝试 8。也可用 `VIDEOFLOW_GPU_BATCH_SIZE=1..8` 固定批量并比较速度/显存。CUDA 内存不足时，程序会针对当前媒体或当前 5 分钟分块回退到更小批量；基准结果中的“批量”是实际成功值。
 
 参考稿应对应完整测试片段。建议从课程中另存 2–3 分钟、包含专业术语和正常停顿的片段，再人工逐字校对。媒体、参考稿和 JSON 结果不应提交到 GitHub。
 

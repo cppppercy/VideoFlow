@@ -97,6 +97,7 @@ def test_gpu_turbo_profile_uses_cuda_float16(monkeypatch, tmp_path: Path) -> Non
         return object()
 
     monkeypatch.setattr(transcriber, "cuda_device_available", lambda: True)
+    monkeypatch.setattr(transcriber, "_gpu_total_memory_mb", lambda: None)
     monkeypatch.setattr(transcriber, "_default_model_factory", model_factory)
     monkeypatch.setattr(transcriber, "_default_batched_factory", lambda model: BatchedFake())
 
@@ -107,6 +108,108 @@ def test_gpu_turbo_profile_uses_cuda_float16(monkeypatch, tmp_path: Path) -> Non
     assert seen["compute_type"] == "float16"
     assert seen["batch_size"] == 4
     assert seen["beam_size"] == 5
+
+
+def test_gpu_batch_size_uses_eight_on_eight_gb_card(monkeypatch) -> None:
+    monkeypatch.delenv("VIDEOFLOW_GPU_BATCH_SIZE", raising=False)
+    monkeypatch.setattr(transcriber, "_gpu_total_memory_mb", lambda: 8188)
+
+    assert transcriber._recommended_gpu_batch_size(
+        transcriber.TRANSCRIPTION_PROFILES["gpu_turbo"]
+    ) == 8
+
+
+def test_gpu_batch_size_respects_explicit_override(monkeypatch) -> None:
+    monkeypatch.setenv("VIDEOFLOW_GPU_BATCH_SIZE", "3")
+
+    assert transcriber._recommended_gpu_batch_size(
+        transcriber.TRANSCRIPTION_PROFILES["gpu_turbo"]
+    ) == 3
+
+
+def test_batched_gpu_out_of_memory_retries_smaller_batch() -> None:
+    calls: list[int] = []
+
+    class Engine:
+        def transcribe(self, path: str, **kwargs: object):
+            calls.append(int(kwargs["batch_size"]))
+            if len(calls) == 1:
+                raise RuntimeError("CUDA out of memory")
+            return iter([]), SimpleNamespace(language="zh")
+
+    segments, info, batch_size = transcriber._run_batched_transcription(
+        Engine(),
+        Path("sample.wav"),
+        options={"language": "zh"},
+        batch_size=8,
+        allow_gpu_fallback=True,
+    )
+
+    assert segments == []
+    assert info.language == "zh"
+    assert batch_size == 4
+    assert calls == [8, 4]
+
+
+def test_hotwords_are_trimmed_and_deduplicated() -> None:
+    assert transcriber.normalize_hotwords("高斯消去法， 残值;高斯消去法\nJordan 标准形") == (
+        "高斯消去法, 残值, Jordan 标准形"
+    )
+
+
+def test_low_confidence_segment_is_marked_for_review() -> None:
+    raw = [
+        SimpleNamespace(
+            start=0.0,
+            end=1.0,
+            text="不确定内容",
+            words=None,
+            avg_logprob=-1.2,
+            compression_ratio=2.5,
+            no_speech_prob=0.1,
+        )
+    ]
+
+    result = transcriber._convert_model_segments(raw, split_words=False)
+
+    assert result[0].review_reason == "低置信、疑似重复"
+
+
+def test_refinement_keeps_only_higher_scoring_candidate() -> None:
+    original = SimpleNamespace(
+        start=0.0,
+        end=1.0,
+        text="原始结果",
+        avg_logprob=-1.4,
+        compression_ratio=2.5,
+        no_speech_prob=0.1,
+    )
+    candidate = SimpleNamespace(
+        start=0.0,
+        end=1.0,
+        text="精修结果",
+        avg_logprob=-0.2,
+        compression_ratio=1.1,
+        no_speech_prob=0.1,
+    )
+
+    class Model:
+        def transcribe(self, path: str, **kwargs: object):
+            assert kwargs["beam_size"] == 8
+            assert kwargs["clip_timestamps"] == [0.0, 1.0]
+            return iter([candidate]), SimpleNamespace(language="zh")
+
+    result, attempted = transcriber._refine_uncertain_segments(
+        Model(),
+        Path("sample.wav"),
+        [original],
+        options={"language": "zh", "beam_size": 5, "vad_filter": True},
+        maximum=1,
+        progress_callback=None,
+    )
+
+    assert attempted == 1
+    assert result == [candidate]
 
 
 def test_gpu_turbo_profile_reports_missing_cuda(monkeypatch, tmp_path: Path) -> None:

@@ -31,6 +31,7 @@ def transcribe_bilibili_audio(
     browser: str | None,
     profile_name: str | None = None,
     initial_prompt: str | None = None,
+    refine_low_confidence: bool = False,
     progress_callback: ProgressCallback | None = None,
 ) -> OnlineTranscript:
     if progress_callback is not None:
@@ -42,6 +43,7 @@ def transcribe_bilibili_audio(
             language=language,
             profile_name=profile_name,
             initial_prompt=initial_prompt,
+            refine_low_confidence=refine_low_confidence,
             progress_callback=progress_callback,
         )
         return OnlineTranscript(title=audio.title, transcript=transcript, source=url)
@@ -55,6 +57,7 @@ def transcribe_bilibili_batch(
     browser: str | None,
     profile_name: str | None = None,
     initial_prompt: str | None = None,
+    refine_low_confidence: bool = False,
     maximum: int = 10,
     progress_callback: ProgressCallback | None = None,
 ) -> BatchTranscription:
@@ -77,6 +80,7 @@ def transcribe_bilibili_batch(
                     browser=browser,
                     profile_name=profile_name,
                     initial_prompt=initial_prompt,
+                    refine_low_confidence=refine_low_confidence,
                     progress_callback=progress_callback,
                 )
             )
@@ -92,6 +96,7 @@ def transcribe_lms_payload(
     language: str | None,
     profile_name: str | None = None,
     initial_prompt: str | None = None,
+    refine_low_confidence: bool = False,
     progress_callback: ProgressCallback | None = None,
 ) -> OnlineTranscript:
     def report_extraction(current: float, total: float | None) -> None:
@@ -126,6 +131,7 @@ def transcribe_lms_payload(
                     language=language,
                     profile_name=profile_name,
                     initial_prompt=initial_prompt,
+                    refine_low_confidence=refine_low_confidence,
                     progress_callback=progress_callback,
                 )
                 return OnlineTranscript(

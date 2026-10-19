@@ -18,6 +18,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--language", help="ISO 语言代码，例如 zh、en；默认自动识别")
     parser.add_argument("--prompt", help="课程关键词或人名，用于提高专有词识别")
+    parser.add_argument(
+        "--refine-low-confidence",
+        action="store_true",
+        help="仅用更高 beam 重试最多 12 个模型标记为可疑的片段",
+    )
     parser.add_argument("--output-dir", default="exports", help="TXT/SRT 输出目录")
     return parser
 
@@ -31,6 +36,7 @@ def main() -> int:
             language=args.language,
             profile_name=args.profile,
             initial_prompt=args.prompt,
+            refine_low_confidence=args.refine_low_confidence,
         )
         txt_path, srt_path = write_exports(transcript, args.output_dir, Path(args.media).stem)
     except TranscriptionError as exc:
@@ -47,6 +53,17 @@ def main() -> int:
             f"识别 {diagnostics.inference_seconds:.1f} 秒，RTF {rtf}，"
             f"覆盖状态 {diagnostics.coverage_status}"
         )
+        if diagnostics.effective_batch_size is not None:
+            print(f"批量大小：{diagnostics.effective_batch_size}")
+        if diagnostics.gpu_name:
+            gpu_memory = (
+                f"，本进程峰值显存约 {diagnostics.peak_gpu_memory_mb:.0f} MB"
+                if diagnostics.peak_gpu_memory_mb is not None
+                else ""
+            )
+            print(f"GPU：{diagnostics.gpu_name}{gpu_memory}")
+        if diagnostics.review_segment_count:
+            print(f"需复核字幕段：{diagnostics.review_segment_count}（模型启发式提示）")
     print(f"TXT：{txt_path}\nSRT：{srt_path}")
     return 0
 
