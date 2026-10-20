@@ -1,11 +1,11 @@
 # VideoFlow 状态
 
-最后更新：2026-10-19
+最后更新：2026-10-20
 
 ## 当前状态
 
-- 当前版本：v0.4.3（GPU 自适应批量、显存诊断、可疑分段标记与可选精修）
-- 当前任务：完成 v0.4.3 回归、实际 GPU 基准和 Git 同步；FunASR/SenseVoice/Paraformer 仅在隔离环境中评估，不替换已验证的默认路径。
+- 当前版本：v0.4.4（B 站单条音频转录结果直出）
+- 当前任务：完成 v0.4.4 的单条/多条结果分流回归；FunASR/SenseVoice/Paraformer 仅在隔离环境中评估，不替换已验证的默认路径。
 - 下一任务：使用 2–3 分钟真实课程人工参考稿，比较 turbo 默认/精修、SenseVoice 和 Paraformer 的 CER、术语命中、时间戳质量、速度与资源，再决定是否新增可选中文后端。
 
 ## 已完成
@@ -22,7 +22,7 @@
 - 将导出文件名规范为跨平台安全格式，避免在线标题中的非法字符导致导出失败。
 - 新增 Windows 默认扬声器 WASAPI 回环录音：用户确认权限后可手动开始/停止，停止后复用本地转录与 TXT/SRT 导出；原始临时 WAV 在转录后删除，不读取 LMS 或 B 站的链接、账号、Cookie、页面或视频流。
 - 将本机临时运行目录置于项目内已忽略的 `.videoflow-runtime/`，避免依赖受限系统临时目录；新增 B 站和本地转录的页面错误文本，避免 Gradio 仅显示无信息的“错误”。
-- 新增 B 站独立音频转录：严格使用 `bestaudio`，不以完整视频格式兜底；最多 10 个 BV 链接顺序处理，逐项隔离失败并生成 TXT/SRT ZIP。
+- 新增 B 站独立音频转录：严格使用 `bestaudio`，不以完整视频格式兜底；最多 10 个 BV 链接顺序处理，逐项隔离失败；单条成功时直接显示分段、全文、SRT 和 TXT/SRT 下载，多个成功结果才生成 TXT/SRT ZIP。
 - 缓存最近使用的一个 Whisper 模型并串行保护推理，批量任务不再重复加载模型，也不会并发争用普通电脑内存。
 - 新增西交 LMS 本地浏览器助手与短期任务适配器：扩展仅有 `lms.xjtu.edu.cn` 页面权限，用户点击后读取单个当前活动；Python 端用短期播放器 token 换取当前账号获准访问的最佳音频回放流，不保存 Cookie、token、Bearer 或签名 URL。
 - 保留 Windows 扬声器录音作为最后兼容性兜底；快速路径不要求实时播放，也不受系统其他声音干扰。
@@ -40,6 +40,7 @@
 
 ## 验证记录
 
+- 2026-10-20 v0.4.4：B 站音频回调按成功条数分流。单个成功结果复用通用结果区并导出单独 TXT/SRT；两个及以上成功结果保留 ZIP 下载。新增离线 UI 测试覆盖两种输出；`python -m pytest --basetemp .tmp-pip\pytest-v044-final -p no:cacheprovider` 为 67/67 通过，`compileall`、`pip check`、Gradio `create_app()` 与 `git diff --check` 通过。未访问真实 B 站链接、未下载用户媒体。
 - 2026-10-19 v0.4.3 开发中：新增本进程 GPU 显存探测、8 GB 显存下的保守批量 8、CUDA OOM 分级回退、热词标准化、模型启发式复核提示和最多 12 段的可选高 beam 精修；新增单元测试覆盖批量选择、OOM 回退、热词去重、低置信标记和候选接受规则。精修依据模型内部概率与重复指标，不是 CER。
 - 2026-10-19 v0.4.3 回归：`python -m pytest --basetemp .tmp-pip\pytest-v043-full -p no:cacheprovider` 为 65/65 通过；`compileall`、`pip check`、浏览器助手 JavaScript 语法、Gradio `create_app()` 与 `git diff --check` 通过。临时 4 秒正弦音频在 GPU turbo 上实际选择批量 8、识别 0.5 秒、RTF 0.124、识别为无语音并正确报告 RTX 4060 名称；任务太短，驱动未暴露可采样的当前进程峰值显存，故该单次未得到显存数值。
 - 2026-10-19 中文替代引擎可行性检查：在隔离 Python 3.9 环境中成功导入 FunASR 1.3.1、PyTorch CPU 与 torchaudio；官方 SenseVoiceSmall 权重下载约 893 MB，未在本轮完成，也尚未验证可与 VideoFlow 时间戳/SRT 结构兼容。隔离环境约 1.7 GB，已删除；未加入项目依赖、未接入网页，也未将其描述为可用功能。

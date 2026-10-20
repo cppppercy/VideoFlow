@@ -187,10 +187,20 @@ def process_bilibili_audio_batch(
     confirmed: bool,
     refine_low_confidence: bool = False,
     progress_callback: Callable[[str, float | None, float | None], None] | None = None,
-) -> tuple[str, str, str | None]:
-    """批量提取 B 站独立音频流并转录，完整视频不会作为回退格式下载。"""
+) -> tuple[
+    str,
+    str,
+    str | None,
+    str,
+    list[list[str]],
+    str,
+    str,
+    str | None,
+    str | None,
+]:
+    """转录 B 站独立音频；单条直接展示，多条才生成 ZIP。"""
     if not confirmed:
-        return "请先确认你有权处理这些视频，仅用于个人学习。", "", None
+        return "请先确认你有权处理这些视频，仅用于个人学习。", "", None, "", [], "", "", None, None
     try:
         result = transcribe_bilibili_batch(
             raw_urls or "",
@@ -207,7 +217,40 @@ def process_bilibili_audio_batch(
             *(f"失败：{source}\n  {message}" for source, message in result.failures),
         ]
         if not result.successes:
-            return f"处理完成：0 个成功，{len(result.failures)} 个失败。", "\n".join(report_lines), None
+            return (
+                f"处理完成：0 个成功，{len(result.failures)} 个失败。",
+                "\n".join(report_lines),
+                None,
+                "",
+                [],
+                "",
+                "",
+                None,
+                None,
+            )
+        if len(result.successes) == 1:
+            item = result.successes[0]
+            transcript = item.transcript
+            txt_path, srt_path = write_exports(transcript, _EXPORT_STORE.path, item.title)
+            status = _diagnostic_status(
+                f"B 站音频转录结束：{len(transcript.segments)} 个分段。",
+                transcript,
+            )
+            batch_status = (
+                f"处理完成：1 个成功，{len(result.failures)} 个失败。"
+                "单条结果已直接显示在页面底部，可复制全文或下载 TXT/SRT。"
+            )
+            return (
+                batch_status,
+                "\n".join(report_lines),
+                None,
+                status,
+                _result_table(transcript),
+                transcript_to_txt(transcript),
+                transcript_to_srt(transcript),
+                str(txt_path),
+                str(srt_path),
+            )
         archive = write_batch_archive(
             [(item.title, item.transcript) for item in result.successes],
             _EXPORT_STORE.path,
@@ -215,11 +258,11 @@ def process_bilibili_audio_batch(
         )
         status = (
             f"处理完成：{len(result.successes)} 个成功，{len(result.failures)} 个失败。"
-            "每个视频的 TXT/SRT 已打包；临时音频已删除。"
+            "多个视频的 TXT/SRT 已打包；临时音频已删除。"
         )
-        return status, "\n".join(report_lines), str(archive)
+        return status, "\n".join(report_lines), str(archive), "", [], "", "", None, None
     except (ValueError, BilibiliSubtitleError, RemoteAudioError, TranscriptionError, OSError) as exc:
-        return f"错误：{exc}", "", None
+        return f"错误：{exc}", "", None, "", [], "", "", None, None
 
 
 def process_lms_replay(
@@ -351,7 +394,17 @@ def create_app() -> Any:
         refine_low_confidence: bool,
         confirmed: bool,
         progress: Any = gr.Progress(),
-    ) -> tuple[str, str, str | None]:
+    ) -> tuple[
+        str,
+        str,
+        str | None,
+        str,
+        list[list[str]],
+        str,
+        str,
+        str | None,
+        str | None,
+    ]:
         return process_bilibili_audio_batch(
             raw_urls,
             profile_name,
@@ -462,7 +515,7 @@ def create_app() -> Any:
                         with gr.Accordion("没有字幕：提取音频并识别", open=False):
                             gr.Markdown(
                                 "每行一个 BV 链接，最多 10 个。只选择独立音频流，不实时播放，"
-                                "不会混入电脑其他声音；结果打包为 ZIP。"
+                                "不会混入电脑其他声音。单个链接直接显示全文和 TXT/SRT；多个链接才打包为 ZIP。"
                             )
                             bilibili_audio_urls = gr.Textbox(
                                 label="B 站链接（每行一个）",
@@ -475,8 +528,8 @@ def create_app() -> Any:
                             bilibili_audio_consent = gr.Checkbox(
                                 label="我确认有权处理这些视频，仅用于个人学习", value=False
                             )
-                            bilibili_audio_button = gr.Button("批量转录 B 站音频", variant="primary")
-                            bilibili_batch_status = gr.Textbox(label="批量状态", interactive=False)
+                            bilibili_audio_button = gr.Button("转录 B 站音频", variant="primary")
+                            bilibili_batch_status = gr.Textbox(label="处理状态", interactive=False)
                             bilibili_batch_report = gr.Textbox(
                                 label="逐项结果", lines=6, interactive=False
                             )
@@ -545,7 +598,17 @@ def create_app() -> Any:
                 refine_low_confidence,
                 bilibili_audio_consent,
             ],
-            [bilibili_batch_status, bilibili_batch_report, bilibili_batch_zip],
+            [
+                bilibili_batch_status,
+                bilibili_batch_report,
+                bilibili_batch_zip,
+                status,
+                table,
+                full_text,
+                srt_text,
+                txt_download,
+                srt_download,
+            ],
         )
         lms_button.click(
             lms_with_progress,
