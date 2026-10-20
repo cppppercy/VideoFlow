@@ -157,6 +157,27 @@ def test_hotwords_are_trimmed_and_deduplicated() -> None:
     )
 
 
+def test_transcription_applies_explicit_course_corrections(tmp_path: Path) -> None:
+    media = tmp_path / "sample.wav"
+    media.touch()
+
+    class Model:
+        def transcribe(self, path: str, **kwargs: object):
+            return iter([SimpleNamespace(start=0.0, end=1.0, text="REG作�业")]), SimpleNamespace(
+                language="zh", language_probability=1.0
+            )
+
+    result = transcribe_media(
+        media,
+        language="zh",
+        correction_rules="REG=>RAG",
+        model_factory=lambda *args: Model(),
+    )
+
+    assert result.segments[0].text == "RAG作业"
+    assert result.segments[0].original_text == "REG作�业"
+
+
 def test_low_confidence_segment_is_marked_for_review() -> None:
     raw = [
         SimpleNamespace(

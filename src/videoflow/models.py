@@ -10,6 +10,10 @@ class TranscriptSegment:
     text: str
     # 模型提供的启发式质量提示。它只用于提醒人工抽查，不能替代人工参考稿 CER。
     review_reason: str | None = None
+    # 发生术语纠错或采用第二模型候选时保留 Whisper/来源原文，便于人工对照。
+    original_text: str | None = None
+    # 第二模型候选始终单独保留；未采用时也可在页面中人工比较。
+    alternative_text: str | None = None
 
     def __post_init__(self) -> None:
         if self.start < 0 or self.end < 0:
@@ -36,6 +40,8 @@ class TranscriptionDiagnostics:
     gpu_name: str | None = None
     peak_gpu_memory_mb: float | None = None
     review_segment_count: int = 0
+    correction_count: int = 0
+    paraformer_review_count: int = 0
 
     @property
     def realtime_factor(self) -> float | None:

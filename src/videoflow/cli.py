@@ -19,9 +19,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--language", help="ISO 语言代码，例如 zh、en；默认自动识别")
     parser.add_argument("--prompt", help="课程关键词或人名，用于提高专有词识别")
     parser.add_argument(
+        "--corrections",
+        help='明确纠错规则，多条用换行分隔，例如 "REG=>RAG"',
+    )
+    parser.add_argument(
         "--refine-low-confidence",
         action="store_true",
         help="仅用更高 beam 重试最多 12 个模型标记为可疑的片段",
+    )
+    parser.add_argument(
+        "--paraformer-review",
+        action="store_true",
+        help="使用可选 Paraformer 复核最多 12 个可疑中文片段",
     )
     parser.add_argument("--output-dir", default="exports", help="TXT/SRT 输出目录")
     return parser
@@ -37,6 +46,8 @@ def main() -> int:
             profile_name=args.profile,
             initial_prompt=args.prompt,
             refine_low_confidence=args.refine_low_confidence,
+            correction_rules=args.corrections,
+            use_paraformer_review=args.paraformer_review,
         )
         txt_path, srt_path = write_exports(transcript, args.output_dir, Path(args.media).stem)
     except TranscriptionError as exc:
@@ -64,6 +75,10 @@ def main() -> int:
             print(f"GPU：{diagnostics.gpu_name}{gpu_memory}")
         if diagnostics.review_segment_count:
             print(f"需复核字幕段：{diagnostics.review_segment_count}（模型启发式提示）")
+        if diagnostics.correction_count:
+            print(f"已按显式规则修正：{diagnostics.correction_count} 处")
+        if diagnostics.paraformer_review_count:
+            print(f"Paraformer 已复核：{diagnostics.paraformer_review_count} 段")
     print(f"TXT：{txt_path}\nSRT：{srt_path}")
     return 0
 

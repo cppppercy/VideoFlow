@@ -13,7 +13,9 @@ from threading import Event, Lock, Thread
 from time import perf_counter, process_time
 from typing import Any
 
+from .glossary import apply_course_glossary, glossary_hotwords
 from .models import Transcript, TranscriptSegment, TranscriptionDiagnostics
+from .paraformer_review import ParaformerReviewError, ParaformerRunner, review_uncertain_segments
 from .runtime import make_temporary_directory
 from .text_processing import clean_transcription_text
 
@@ -764,6 +766,9 @@ def transcribe_media(
     profile_name: str | None = None,
     initial_prompt: str | None = None,
     refine_low_confidence: bool = False,
+    correction_rules: str | None = None,
+    use_paraformer_review: bool = False,
+    paraformer_runner: ParaformerRunner | None = None,
     model_factory: Callable[[str, str, str], Any] | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> Transcript:
@@ -825,7 +830,7 @@ def transcribe_media(
                 options["repetition_penalty"] = 1.1
                 options["no_repeat_ngram_size"] = 3
                 options["hallucination_silence_threshold"] = 2.0
-            hotwords = normalize_hotwords(initial_prompt)
+            hotwords = glossary_hotwords(initial_prompt, correction_rules)
             if hotwords:
                 # hotwords 专门用于给识别器提供术语提示；相比 initial_prompt，
                 # 它不会把整段提示当成第一窗口之前已经说过的正文。
@@ -913,6 +918,20 @@ def transcribe_media(
             f"无法解码或转录“{path.name}”。请确认文件可播放、FFmpeg 可用且模型运行正常：{exc}"
         ) from exc
 
+    paraformer_review_count = 0
+    if use_paraformer_review:
+        try:
+            with _MODEL_RUNTIME_LOCK:
+                converted_segments, paraformer_review_count = review_uncertain_segments(
+                    path,
+                    converted_segments,
+                    terms_text=hotwords,
+                    runner=paraformer_runner,
+                    progress_callback=progress_callback,
+                )
+        except ParaformerReviewError as exc:
+            raise TranscriptionError(str(exc)) from exc
+
     measured_duration = media_duration or getattr(info, "duration", None)
     speech_duration = getattr(info, "duration_after_vad", None)
     last_segment_end = converted_segments[-1].end if converted_segments else None
@@ -931,13 +950,19 @@ def transcribe_media(
         gpu_name=resources.gpu_name,
         peak_gpu_memory_mb=resources.peak_gpu_memory_mb,
         review_segment_count=sum(1 for item in converted_segments if item.review_reason),
+        paraformer_review_count=paraformer_review_count,
     )
     _notify(progress_callback, "识别结束，正在生成结果", measured_duration, measured_duration)
-    return Transcript(
+    transcript = Transcript(
         segments=converted_segments,
         language=getattr(info, "language", None),
         language_probability=getattr(info, "language_probability", None),
         diagnostics=diagnostics,
+    )
+    return apply_course_glossary(
+        transcript,
+        terms_text=initial_prompt,
+        rules_text=correction_rules,
     )
 
 

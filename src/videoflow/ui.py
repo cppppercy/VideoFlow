@@ -5,6 +5,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .exporters import transcript_to_srt, transcript_to_txt, write_batch_archive, write_exports
+from .glossary import (
+    apply_course_glossary,
+    delete_course_glossary,
+    list_course_glossaries,
+    load_course_glossary,
+    save_course_glossary,
+)
+from .paraformer_review import paraformer_available
 from .runtime import make_temporary_directory
 from .sources.bilibili import BilibiliSubtitleError, fetch_bilibili_subtitles
 from .sources.remote_audio import RemoteAudioError
@@ -41,7 +49,14 @@ _SYSTEM_AUDIO_RECORDER = SystemAudioRecorder(_EXPORT_STORE.path)
 
 def _result_table(transcript: Any) -> list[list[str]]:
     return [
-        [f"{item.start:.3f}", f"{item.end:.3f}", item.text, item.review_reason or ""]
+        [
+            f"{item.start:.3f}",
+            f"{item.end:.3f}",
+            item.original_text or item.text,
+            item.text,
+            item.alternative_text or "",
+            item.review_reason or "",
+        ]
         for item in transcript.segments
     ]
 
@@ -88,6 +103,10 @@ def _diagnostic_status(prefix: str, transcript: Any) -> str:
             details += f"，本进程峰值显存约 {diagnostics.peak_gpu_memory_mb:.0f} MB"
     if diagnostics.review_segment_count:
         details += f"，已标记 {diagnostics.review_segment_count} 段需复核"
+    if diagnostics.correction_count:
+        details += f"，已按显式规则修正 {diagnostics.correction_count} 处"
+    if diagnostics.paraformer_review_count:
+        details += f"，Paraformer 已复核 {diagnostics.paraformer_review_count} 段"
     if diagnostics.coverage_status == "needs_review":
         suffix = "。最后字幕与媒体末尾相差较大，请检查尾部是否为静音或发生遗漏；本次结果未标记为完整成功。"
     elif diagnostics.coverage_status == "no_speech":
@@ -117,6 +136,8 @@ def process_upload(
     language: str | None,
     initial_prompt: str | None,
     refine_low_confidence: bool = False,
+    correction_rules: str | None = None,
+    use_paraformer_review: bool = False,
     progress_callback: Callable[[str, float | None, float | None], None] | None = None,
 ) -> tuple[str, list[list[str]], str, str, str | None, str | None]:
     """UI 回调。导出文件只在进程的临时目录内保存。"""
@@ -129,6 +150,8 @@ def process_upload(
             language=language or None,
             initial_prompt=initial_prompt,
             refine_low_confidence=refine_low_confidence,
+            correction_rules=correction_rules,
+            use_paraformer_review=use_paraformer_review,
             progress_callback=progress_callback,
         )
         language_label = transcript.language or "未知"
@@ -150,7 +173,11 @@ def process_upload(
 
 
 def process_bilibili_url(
-    video_url: str | None, language_pattern: str, browser: str | None
+    video_url: str | None,
+    language_pattern: str,
+    browser: str | None,
+    glossary_terms: str | None = None,
+    correction_rules: str | None = None,
 ) -> tuple[str, list[list[str]], str, str, str | None, str | None]:
     """B 站已有字幕回调；不下载完整视频，也不持久化浏览器登录信息。"""
     try:
@@ -159,7 +186,11 @@ def process_bilibili_url(
         result = fetch_bilibili_subtitles(
             video_url, language_pattern=language_pattern, browser=browser or None
         )
-        transcript = result.transcript
+        transcript = apply_course_glossary(
+            result.transcript,
+            terms_text=glossary_terms,
+            rules_text=correction_rules,
+        )
         txt_path, srt_path = write_exports(transcript, _EXPORT_STORE.path, result.title)
         language_label = transcript.language or "自动"
         status = (
@@ -186,6 +217,8 @@ def process_bilibili_audio_batch(
     initial_prompt: str | None,
     confirmed: bool,
     refine_low_confidence: bool = False,
+    correction_rules: str | None = None,
+    use_paraformer_review: bool = False,
     progress_callback: Callable[[str, float | None, float | None], None] | None = None,
 ) -> tuple[
     str,
@@ -210,6 +243,8 @@ def process_bilibili_audio_batch(
             profile_name=profile_name,
             initial_prompt=initial_prompt,
             refine_low_confidence=refine_low_confidence,
+            correction_rules=correction_rules,
+            use_paraformer_review=use_paraformer_review,
             progress_callback=progress_callback,
         )
         report_lines = [
@@ -272,6 +307,8 @@ def process_lms_replay(
     initial_prompt: str | None,
     confirmed: bool,
     refine_low_confidence: bool = False,
+    correction_rules: str | None = None,
+    use_paraformer_review: bool = False,
     progress_callback: Callable[[str, float | None, float | None], None] | None = None,
 ) -> tuple[str, str, list[list[str]], str, str, str | None, str | None]:
     """使用浏览器助手提供的一次性任务提取课程音频并转录；首项用于清空任务框。"""
@@ -285,6 +322,8 @@ def process_lms_replay(
             profile_name=profile_name,
             initial_prompt=initial_prompt,
             refine_low_confidence=refine_low_confidence,
+            correction_rules=correction_rules,
+            use_paraformer_review=use_paraformer_review,
             progress_callback=progress_callback,
         )
         transcript = result.transcript
@@ -323,6 +362,8 @@ def stop_system_audio_and_transcribe(
     language: str | None,
     initial_prompt: str | None,
     refine_low_confidence: bool = False,
+    correction_rules: str | None = None,
+    use_paraformer_review: bool = False,
     progress_callback: Callable[[str, float | None, float | None], None] | None = None,
 ) -> tuple[str, list[list[str]], str, str, str | None, str | None]:
     """停止录音后立即使用既有本地转录链路；原始 WAV 随后删除。"""
@@ -334,6 +375,8 @@ def stop_system_audio_and_transcribe(
             language=language or None,
             initial_prompt=initial_prompt,
             refine_low_confidence=refine_low_confidence,
+            correction_rules=correction_rules,
+            use_paraformer_review=use_paraformer_review,
             progress_callback=progress_callback,
         )
         txt_path, srt_path = write_exports(transcript, _EXPORT_STORE.path, "system-audio-transcript")
@@ -367,6 +410,11 @@ def create_app() -> Any:
         option for option in PROFILE_OPTIONS if has_cuda or option[1] != "gpu_turbo"
     )
     default_profile = "gpu_turbo" if has_cuda else "balanced"
+    has_paraformer = paraformer_available()
+    try:
+        saved_glossaries = list_course_glossaries()
+    except ValueError:
+        saved_glossaries = ()
 
     def upload_with_progress(
         media_path: str | None,
@@ -374,6 +422,8 @@ def create_app() -> Any:
         language: str | None,
         initial_prompt: str | None,
         refine_low_confidence: bool,
+        correction_rules: str | None,
+        use_paraformer_review: bool,
         progress: Any = gr.Progress(),
     ) -> tuple[str, list[list[str]], str, str, str | None, str | None]:
         return process_upload(
@@ -382,6 +432,8 @@ def create_app() -> Any:
             language,
             initial_prompt,
             refine_low_confidence,
+            correction_rules,
+            use_paraformer_review,
             progress_callback=_gradio_progress_callback(progress),
         )
 
@@ -392,6 +444,8 @@ def create_app() -> Any:
         browser: str | None,
         initial_prompt: str | None,
         refine_low_confidence: bool,
+        correction_rules: str | None,
+        use_paraformer_review: bool,
         confirmed: bool,
         progress: Any = gr.Progress(),
     ) -> tuple[
@@ -413,6 +467,8 @@ def create_app() -> Any:
             initial_prompt,
             confirmed,
             refine_low_confidence,
+            correction_rules,
+            use_paraformer_review,
             progress_callback=_gradio_progress_callback(progress),
         )
 
@@ -422,6 +478,8 @@ def create_app() -> Any:
         language: str | None,
         initial_prompt: str | None,
         refine_low_confidence: bool,
+        correction_rules: str | None,
+        use_paraformer_review: bool,
         confirmed: bool,
         progress: Any = gr.Progress(),
     ) -> tuple[str, str, list[list[str]], str, str, str | None, str | None]:
@@ -432,6 +490,8 @@ def create_app() -> Any:
             initial_prompt,
             confirmed,
             refine_low_confidence,
+            correction_rules,
+            use_paraformer_review,
             progress_callback=_gradio_progress_callback(progress),
         )
 
@@ -440,6 +500,8 @@ def create_app() -> Any:
         language: str | None,
         initial_prompt: str | None,
         refine_low_confidence: bool,
+        correction_rules: str | None,
+        use_paraformer_review: bool,
         progress: Any = gr.Progress(),
     ) -> tuple[str, list[list[str]], str, str, str | None, str | None]:
         return stop_system_audio_and_transcribe(
@@ -447,8 +509,59 @@ def create_app() -> Any:
             language,
             initial_prompt,
             refine_low_confidence,
+            correction_rules,
+            use_paraformer_review,
             progress_callback=_gradio_progress_callback(progress),
         )
+
+    def save_glossary(name: str, terms: str, corrections: str) -> tuple[Any, str]:
+        try:
+            saved = save_course_glossary(name, terms, corrections)
+            return (
+                gr.Dropdown(
+                    choices=list_course_glossaries(),
+                    value=saved.name,
+                    allow_custom_value=True,
+                ),
+                f"已保存课程词表“{saved.name}”（仅保存在本机项目目录）。",
+            )
+        except (ValueError, OSError) as exc:
+            return (
+                gr.Dropdown(
+                    choices=list_course_glossaries(),
+                    value=name or None,
+                    allow_custom_value=True,
+                ),
+                f"错误：{exc}",
+            )
+
+    def load_glossary(name: str) -> tuple[str, str, str]:
+        try:
+            saved = load_course_glossary(name)
+            return saved.terms, saved.corrections, f"已载入课程词表“{saved.name}”。"
+        except (ValueError, OSError) as exc:
+            return "", "", f"错误：{exc}"
+
+    def delete_glossary(name: str) -> tuple[Any, str]:
+        try:
+            delete_course_glossary(name)
+            return (
+                gr.Dropdown(
+                    choices=list_course_glossaries(),
+                    value=None,
+                    allow_custom_value=True,
+                ),
+                f"已删除课程词表“{name}”。",
+            )
+        except (ValueError, OSError) as exc:
+            return (
+                gr.Dropdown(
+                    choices=list_course_glossaries(),
+                    value=name or None,
+                    allow_custom_value=True,
+                ),
+                f"错误：{exc}",
+            )
 
     with gr.Blocks(title="VideoFlow") as demo:
         gr.Markdown(
@@ -464,14 +577,34 @@ def create_app() -> Any:
                     label="速度 / 准确度",
                 )
                 language = gr.Dropdown(LANGUAGE_OPTIONS, value="zh", label="语音语言")
+            with gr.Row():
+                course_glossary = gr.Dropdown(
+                    choices=saved_glossaries,
+                    label="课程词表（可输入新名称或选择已保存项）",
+                    allow_custom_value=True,
+                )
+                glossary_load = gr.Button("载入词表")
+                glossary_save = gr.Button("保存词表")
+                glossary_delete = gr.Button("删除词表")
             initial_prompt = gr.Textbox(
                 label="课程术语热词（推荐填写，用逗号分隔）",
-                placeholder="例如：数值计算，线性方程组，高斯消去法，残值，舍入误差",
-                lines=2,
+                placeholder="例如：RAG，向量检索，Embedding，AI 原生，软件架构师",
+                lines=3,
             )
+            correction_rules = gr.Textbox(
+                label="明确纠错规则（可选，每行：常见错词=>正确术语）",
+                placeholder="例如：\nREG=>RAG\n作严=>作业\nAI原声思维=>AI原生思维",
+                lines=3,
+            )
+            glossary_status = gr.Textbox(label="课程词表状态", interactive=False)
             refine_low_confidence = gr.Checkbox(
                 label="精修可疑片段（可选：最多 12 段，以更高 beam 重试）",
                 value=False,
+            )
+            paraformer_review = gr.Checkbox(
+                label="用 Paraformer 复核可疑中文片段（实验性，最多 12 段）",
+                value=False,
+                interactive=has_paraformer,
             )
             gpu_note = (
                 "已检测到 NVIDIA CUDA：可选择“GPU 增强”，使用 turbo 提高准确度且避免 CPU small 的慢速。"
@@ -484,8 +617,12 @@ def create_app() -> Any:
                 "短音频使用批量推理，超过 20 分钟时自动按 5 分钟"
                 "分块批量识别。中文结果会统一转换为简体，并压缩明显的重复幻觉。"
                 "术语热词会通过专用 hotwords 参数提示模型，不会作为正文前缀。"
+                "明确纠错规则会自动修改最终 TXT/SRT，但页面始终保留模型原文；"
+                "拼音近似只显示候选，不会自动改写。"
                 "勾选精修后，程序只会重试模型标记为低置信或异常重复的少量片段；"
                 "它是启发式优化，不替代人工抽查。"
+                f"Paraformer 可选复核当前{'已安装' if has_paraformer else '未安装'}；"
+                "未安装时可执行 `python -m pip install -e \".[chinese-review]\"`。"
                 f"首次使用对应模型时需要下载。{gpu_note}"
             )
 
@@ -568,7 +705,14 @@ def create_app() -> Any:
                     recording_stop = gr.Button("停止录制并转录", variant="primary")
         status = gr.Textbox(label="处理状态", interactive=False)
         table = gr.Dataframe(
-            headers=["开始（秒）", "结束（秒）", "文本", "复核提示"],
+            headers=[
+                "开始（秒）",
+                "结束（秒）",
+                "模型原文",
+                "最终文本",
+                "Paraformer 候选",
+                "复核提示",
+            ],
             label="字幕分段",
             interactive=False,
         )
@@ -579,12 +723,20 @@ def create_app() -> Any:
             srt_download = gr.File(label="下载 SRT", interactive=False)
         run_button.click(
             upload_with_progress,
-            [media, profile, language, initial_prompt, refine_low_confidence],
+            [
+                media,
+                profile,
+                language,
+                initial_prompt,
+                refine_low_confidence,
+                correction_rules,
+                paraformer_review,
+            ],
             [status, table, full_text, srt_text, txt_download, srt_download],
         )
         bilibili_button.click(
             process_bilibili_url,
-            [bilibili_url, bilibili_language, browser],
+            [bilibili_url, bilibili_language, browser, initial_prompt, correction_rules],
             [status, table, full_text, srt_text, txt_download, srt_download],
         )
         bilibili_audio_button.click(
@@ -596,6 +748,8 @@ def create_app() -> Any:
                 bilibili_audio_browser,
                 initial_prompt,
                 refine_low_confidence,
+                correction_rules,
+                paraformer_review,
                 bilibili_audio_consent,
             ],
             [
@@ -612,14 +766,45 @@ def create_app() -> Any:
         )
         lms_button.click(
             lms_with_progress,
-            [lms_payload, profile, language, initial_prompt, refine_low_confidence, lms_consent],
+            [
+                lms_payload,
+                profile,
+                language,
+                initial_prompt,
+                refine_low_confidence,
+                correction_rules,
+                paraformer_review,
+                lms_consent,
+            ],
             [lms_payload, status, table, full_text, srt_text, txt_download, srt_download],
         )
         recording_start.click(start_system_audio_recording, [recording_consent], [status])
         recording_stop.click(
             recording_with_progress,
-            [profile, language, initial_prompt, refine_low_confidence],
+            [
+                profile,
+                language,
+                initial_prompt,
+                refine_low_confidence,
+                correction_rules,
+                paraformer_review,
+            ],
             [status, table, full_text, srt_text, txt_download, srt_download],
+        )
+        glossary_load.click(
+            load_glossary,
+            [course_glossary],
+            [initial_prompt, correction_rules, glossary_status],
+        )
+        glossary_save.click(
+            save_glossary,
+            [course_glossary, initial_prompt, correction_rules],
+            [course_glossary, glossary_status],
+        )
+        glossary_delete.click(
+            delete_glossary,
+            [course_glossary],
+            [course_glossary, glossary_status],
         )
 
     return demo

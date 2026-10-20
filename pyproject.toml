@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "videoflow"
-version = "0.4.4"
+version = "0.5.0"
 description = "本地媒体、B 站音频与已授权课程回放转录工具"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -20,6 +20,8 @@ dependencies = [
   "SoundCard>=0.4,<0.5",
   # 本地确定性繁转简；保证中文预览、TXT 与 SRT 统一使用简体字。
   "opencc-python-reimplemented==0.1.7",
+  # 仅用于本地课程词表的拼音近似候选；模糊候选不会自动改写正文。
+  "pypinyin>=0.53,<1",
   # 代理环境使用 SOCKS_PROXY 时，Gradio/httpx 仍可正常启动。
   "httpx[socks]>=0.24,<1",
 ]
@@ -30,6 +32,13 @@ gpu = [
   # Windows 可选 GPU 运行库；不让没有 NVIDIA 显卡的用户承担约 1 GB 下载。
   "nvidia-cublas-cu12==12.6.4.1; sys_platform == 'win32'",
   "nvidia-cudnn-cu12==9.5.0.50; sys_platform == 'win32'",
+]
+chinese-review = [
+  # 可选中文第二识别器；只复核少量 Whisper 可疑片段，不替换默认路径。
+  "funasr==1.4.16",
+  # torch 与 torchaudio 必须使用同一发行版本，避免音频扩展加载失败。
+  "torch==2.11.0",
+  "torchaudio==2.11.0",
 ]
 
 [project.scripts]

@@ -4,9 +4,9 @@
 
 ## 当前状态
 
-- 当前版本：v0.4.4（B 站单条音频转录结果直出）
-- 当前任务：完成 v0.4.4 的单条/多条结果分流回归；FunASR/SenseVoice/Paraformer 仅在隔离环境中评估，不替换已验证的默认路径。
-- 下一任务：使用 2–3 分钟真实课程人工参考稿，比较 turbo 默认/精修、SenseVoice 和 Paraformer 的 CER、术语命中、时间戳质量、速度与资源，再决定是否新增可选中文后端。
+- 当前版本：v0.5.0（课程词表、可审查纠错与可选 Paraformer 片段复核）
+- 当前任务：完成课程词表、显式纠错、原文/最终文本对照和可选第二模型复核；默认主链路仍为已验证的 faster-whisper。
+- 下一任务：使用 2–3 分钟真实课程人工参考稿，比较 turbo 默认、课程词表、Whisper 精修和 Paraformer 片段复核的 CER、术语命中、速度与资源，再调整采用阈值。
 
 ## 已完成
 
@@ -37,9 +37,15 @@
 - TXT 与 SRT 分离排版：TXT 合并时间片、保留已有标点并按可靠停顿/句末生成自然段；SRT 时间轴不变，本地、B 站、LMS、录音和批量 ZIP 统一生效。
 - 新增 `videoflow-benchmark`：在同一媒体上记录加载时间、推理时间、RTF、峰值内存、末条字幕和覆盖状态；仅在提供人工参考稿时计算 CER。
 - 完成 `docs/TRANSCRIPTION_DIAGNOSIS.md`、`docs/ASR_BENCHMARK.md`、v0.4.2 发布说明与交接摘要；未加入尚无 CER 证据的 FunASR、SenseVoice 或 whisper.cpp 强制依赖。
+- 新增本机课程词表：可按课程保存、载入和删除热词及显式纠错规则；数据仅写入 Git 已忽略的 `.videoflow-data/`。
+- 新增可审查纠错：`错词=>正确词` 规则会更新最终预览、TXT 和 SRT，同时保留模型原文；拼音近似术语只标记候选，不自动替换；Unicode 乱码替换符会清理并提示复核。
+- 新增可选 FunASR Paraformer 中文片段复核：只处理最多 12 个 Whisper 可疑段，保留候选供比较，只有术语命中更好或消除乱码时自动采用；未安装可选依赖时自动禁用，不影响 faster-whisper 主链路。
+- 结果表扩展为模型原文、最终文本、Paraformer 候选和复核提示；诊断新增显式纠错数与第二模型复核数，CLI 同步支持 `--corrections` 和 `--paraformer-review`。
 
 ## 验证记录
 
+- 2026-10-20 v0.5.0 自动化与静态检查：`python -m pytest --basetemp .tmp-pip\pytest-v050-final -p no:cacheprovider` 为 77/77 通过；`compileall`、`pip check`、浏览器助手 `node --check`、`git diff --check` 和 Gradio `create_app()` 均通过。课程词表、显式纠错、拼音候选、乱码清理、Paraformer 候选采用策略及业务链路参数传递均有离线测试。
+- 2026-10-20 Paraformer 本机验证：在 Python 3.13.7 中安装 `FunASR 1.4.16`、CPU 版 `torch/torchaudio 2.11.0`，下载约 990 MB 的官方 SeACo Paraformer 中文模型；模型权重完整加载，并对模型自带中文示例音频完成真实 CPU 推理（该次模型报告 RTF 约 0.078）。程序会优先使用已缓存模型，网页启动只做轻量包探测。该验证不包含用户课程音频，不能证明课程 CER 提升。
 - 2026-10-20 v0.4.4：B 站音频回调按成功条数分流。单个成功结果复用通用结果区并导出单独 TXT/SRT；两个及以上成功结果保留 ZIP 下载。新增离线 UI 测试覆盖两种输出；`python -m pytest --basetemp .tmp-pip\pytest-v044-final -p no:cacheprovider` 为 67/67 通过，`compileall`、`pip check`、Gradio `create_app()` 与 `git diff --check` 通过。未访问真实 B 站链接、未下载用户媒体。
 - 2026-10-19 v0.4.3 开发中：新增本进程 GPU 显存探测、8 GB 显存下的保守批量 8、CUDA OOM 分级回退、热词标准化、模型启发式复核提示和最多 12 段的可选高 beam 精修；新增单元测试覆盖批量选择、OOM 回退、热词去重、低置信标记和候选接受规则。精修依据模型内部概率与重复指标，不是 CER。
 - 2026-10-19 v0.4.3 回归：`python -m pytest --basetemp .tmp-pip\pytest-v043-full -p no:cacheprovider` 为 65/65 通过；`compileall`、`pip check`、浏览器助手 JavaScript 语法、Gradio `create_app()` 与 `git diff --check` 通过。临时 4 秒正弦音频在 GPU turbo 上实际选择批量 8、识别 0.5 秒、RTF 0.124、识别为无语音并正确报告 RTX 4060 名称；任务太短，驱动未暴露可采样的当前进程峰值显存，故该单次未得到显存数值。
@@ -84,7 +90,7 @@
 ## 未验证与限制
 
 - 当前机器检测到 Python 3.13，未检测到 Python 3.11；项目声明兼容 Python 3.11–3.13，但尚未在 3.11 实机运行。
-- 真实基准已运行 tiny、base 和 GPU turbo 的部分配置，但没有人工参考稿，无法计算 CER；`small` 未缓存，SenseVoiceSmall、FunASR/Paraformer 和 whisper.cpp 未安装或验证。
+- 真实基准已运行 tiny、base 和 GPU turbo 的部分配置，但没有人工参考稿，无法计算 CER；`small` 未缓存，SenseVoiceSmall 和 whisper.cpp 未安装。FunASR/Paraformer 可选依赖已在 Python 3.13 导入，真实课程准确率仍未验证。
 - 65 分钟稀疏样本和 60 分钟连续有声重复样本均已验证速度、内存和末尾覆盖；60–90 分钟连续**真实课程**的准确率、LMS 提取和完整性仍待用户验收。
 - 覆盖检查只能发现明显的末尾差距，不能自动判断差距来自长尾静音还是漏转；状态为“需检查”时必须人工查看音轨。
 - 下载文件仅存放在应用进程的临时目录，退出时清理；程序异常退出时临时目录清理尚未验证。
@@ -97,6 +103,6 @@
 
 ## Git / 发布
 
-- 本地分支：`main`，跟踪 `origin/main`；v0.4.2 主实现已于 2026-10-19 以提交 `32c23a3` 推送，状态同步提交随后推送。
-- GitHub 远程：`https://github.com/cppppercy/VideoFlow.git`，已公开并包含 v0.4.2 当前进度。尚未创建 v0.4.2 Git 标签或 GitHub Release。
+- 本地分支：`main`，跟踪 `origin/main`；远程最新提交在本轮开始时为 `d5efb1c`（v0.4.4）。v0.5.0 尚未推送。
+- GitHub 远程：`https://github.com/cppppercy/VideoFlow.git`，已公开并包含 v0.4.4。尚未创建 v0.5.0 Git 标签或 GitHub Release。
 - 版本交接报告：`docs/HANDOVER_V0.1.0.md`、`docs/HANDOVER_V0.2.0.md`。后续发布标签或 GitHub Release 仍须负责人明确批准。

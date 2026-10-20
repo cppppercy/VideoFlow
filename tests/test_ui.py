@@ -44,7 +44,7 @@ def test_single_bilibili_audio_result_is_shown_in_common_result_area(monkeypatch
     assert "直接显示在页面底部" in output[0]
     assert output[2] is None
     assert output[3].startswith("B 站音频转录结束")
-    assert output[4] == [["0.000", "1.000", "单条结果", ""]]
+    assert output[4] == [["0.000", "1.000", "单条结果", "单条结果", "", ""]]
     assert output[5] == "单条结果\n"
     assert output[7] == str(tmp_path / "course.txt")
     assert output[8] == str(tmp_path / "course.srt")

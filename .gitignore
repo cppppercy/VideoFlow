@@ -30,6 +30,7 @@ tmp/
 temp/
 .tmp-pip/
 .videoflow-runtime/
+.videoflow-data/
 *.mp3
 *.wav
 *.m4a
