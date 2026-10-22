@@ -1,6 +1,6 @@
 # VideoFlow 状态
 
-最后更新：2026-10-20
+最后更新：2026-10-22
 
 ## 当前状态
 
@@ -44,6 +44,7 @@
 
 ## 验证记录
 
+- 2026-10-22 v0.5.0 发布同步：功能提交 `fa0b3dc` 已推送到 `origin/main`；推送前工作区干净，本轮未创建 Git 标签或 GitHub Release。
 - 2026-10-20 v0.5.0 自动化与静态检查：`python -m pytest --basetemp .tmp-pip\pytest-v050-final -p no:cacheprovider` 为 77/77 通过；`compileall`、`pip check`、浏览器助手 `node --check`、`git diff --check` 和 Gradio `create_app()` 均通过。课程词表、显式纠错、拼音候选、乱码清理、Paraformer 候选采用策略及业务链路参数传递均有离线测试。
 - 2026-10-20 Paraformer 本机验证：在 Python 3.13.7 中安装 `FunASR 1.4.16`、CPU 版 `torch/torchaudio 2.11.0`，下载约 990 MB 的官方 SeACo Paraformer 中文模型；模型权重完整加载，并对模型自带中文示例音频完成真实 CPU 推理（该次模型报告 RTF 约 0.078）。程序会优先使用已缓存模型，网页启动只做轻量包探测。该验证不包含用户课程音频，不能证明课程 CER 提升。
 - 2026-10-20 v0.4.4：B 站音频回调按成功条数分流。单个成功结果复用通用结果区并导出单独 TXT/SRT；两个及以上成功结果保留 ZIP 下载。新增离线 UI 测试覆盖两种输出；`python -m pytest --basetemp .tmp-pip\pytest-v044-final -p no:cacheprovider` 为 67/67 通过，`compileall`、`pip check`、Gradio `create_app()` 与 `git diff --check` 通过。未访问真实 B 站链接、未下载用户媒体。
@@ -103,6 +104,6 @@
 
 ## Git / 发布
 
-- 本地分支：`main`，跟踪 `origin/main`；远程最新提交在本轮开始时为 `d5efb1c`（v0.4.4）。v0.5.0 尚未推送。
-- GitHub 远程：`https://github.com/cppppercy/VideoFlow.git`，已公开并包含 v0.4.4。尚未创建 v0.5.0 Git 标签或 GitHub Release。
+- 本地分支：`main`，跟踪 `origin/main`；v0.5.0 功能提交 `fa0b3dc` 已于 2026-10-22 推送。
+- GitHub 远程：`https://github.com/cppppercy/VideoFlow.git`，已公开并包含 v0.5.0。尚未创建 v0.5.0 Git 标签或 GitHub Release。
 - 版本交接报告：`docs/HANDOVER_V0.1.0.md`、`docs/HANDOVER_V0.2.0.md`。后续发布标签或 GitHub Release 仍须负责人明确批准。
